@@ -1,10 +1,11 @@
 // blockchain/block.go
 package blockchain
 
-type BlockChain struct {
-	// BlockChain은 Block포인터 슬라이스를 가진다.
-	Blocks []*Block
-}
+import (
+	"bytes"
+	"encoding/gob"
+	"log"
+)
 
 // Block의 구조
 type Block struct {
@@ -28,19 +29,38 @@ func CreateBlock(data string, prevHash []byte) *Block {
 	return block
 }
 
-// 새로운 블록을 만들어서 블록체인에 연결하는 함수
-func (chain *BlockChain) AddBlock(data string) {
-	prevBlock := chain.Blocks[len(chain.Blocks)-1]
-	new := CreateBlock(data, prevBlock.Hash)
-	chain.Blocks = append(chain.Blocks, new)
-}
-
 // Chain의 첫 블록을 Genesis Block이라고 한다.
 // Genesis Block은 이전 해시가 없으므로 예외처리한다.
 func Genesis() *Block {
 	return CreateBlock("Genesis", []byte{})
 }
 
-func InitBlockChain() *BlockChain {
-	return &BlockChain{[]*Block{Genesis()}}
+// Badger DB가 arrays of byte 밖에 수용하지 못하기 때문에
+// Block data structure를 serialize, deserialize해줄
+// Util함수가 필요하다.
+func (b *Block) Serialize() []byte {
+	var res bytes.Buffer
+	encoder := gob.NewEncoder(&res)
+
+	err := encoder.Encode(b)
+	Handle(err)
+
+	return res.Bytes()
+}
+
+func Deserialize(data []byte) *Block {
+	var block Block
+
+	decoder := gob.NewDecoder(bytes.NewReader(data))
+
+	err := decoder.Decode(&block)
+	Handle(err)
+
+	return &block
+}
+
+func Handle(err error) {
+	if err != nil {
+		log.Panic(err)
+	}
 }
