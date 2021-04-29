@@ -16,25 +16,6 @@ type Transaction struct {
 	Outputs []TxOutput
 }
 
-// 이것이 TXO(Transaction Output)입니다.
-// "트랜잭션의 아웃풋"과 TXO라는 표현을 병행해서 사용합니다.
-type TxOutput struct {
-	Value int // 잔액
-
-	// 소유자의 공개키
-	// 여기서는 쉽게 소유자의 주소를 사용합니다.
-	PubKey string
-}
-
-// 트랜잭션의 인풋은 이전 트랜잭션에서의 아웃풋을 사용하는 것임을 기억해야합니다.
-// {ID}를 가지는 트랜잭션의 {OUT}번째 {Sig} 소유의 아웃풋으로 생각할 수 있습니다.
-type TxInput struct {
-	ID  []byte
-	Out int
-	Sig string // 소유자의 서명
-}
-
-// 1
 // transaction에ID를 부여
 func (tx *Transaction) SetID() {
 	var encoded bytes.Buffer
@@ -48,7 +29,6 @@ func (tx *Transaction) SetID() {
 	tx.ID = hash[:]
 }
 
-// 1
 // mining하면 to에게 코인을 보상으로 줍니다.
 // 해당 트랜잭션을 Coinbase 라고 부르겠습니다.
 func CoinbaseTx(to, data string) *Transaction {
@@ -68,7 +48,6 @@ func CoinbaseTx(to, data string) *Transaction {
 	return &tx
 }
 
-// 2 (blockchain.go 수정 후 참고)
 // Transaction을 만드는 함수 입니다.
 func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction {
 	var inputs []TxInput
@@ -115,20 +94,7 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction
 	return &tx
 }
 
-// 1
 // 해당 트랜잭션이 Coinbase 인가?
 func (tx *Transaction) IsCoinbase() bool {
 	return len(tx.Inputs) == 1 && len(tx.Inputs[0].ID) == 0 && tx.Inputs[0].Out == -1
-}
-
-// 1
-// Signature를 확인해서 같으면 풀 수 있는 (소유의) Input입니다.
-func (in *TxInput) CanUnlock(data string) bool {
-	return in.Sig == data
-}
-
-// 1
-// 공개키를 확인해서 같으면 풀 수 있는 (소유의) Input입니다.
-func (out *TxOutput) CanBeUnlocked(data string) bool {
-	return out.PubKey == data
 }
