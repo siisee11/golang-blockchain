@@ -70,6 +70,9 @@ func (cli *CommandLine) printChain() {
 
 		pow := blockchain.NewProof(block)
 		fmt.Printf("PoW: %s\n", strconv.FormatBool(pow.Validate()))
+		for _, tx := range block.Transactions {
+			fmt.Println(tx)
+		}
 		fmt.Println()
 
 		// if Genesis
@@ -80,17 +83,26 @@ func (cli *CommandLine) printChain() {
 }
 
 func (cli *CommandLine) createBlockChain(address string) {
+	if !wallet.ValidateAddress(address) {
+		log.Panic("Address is not Valid")
+	}
 	chain := blockchain.InitBlockChain(address)
 	chain.Database.Close()
 	fmt.Println("Finished!")
 }
 
 func (cli *CommandLine) getBalance(address string) {
+	if !wallet.ValidateAddress(address) {
+		log.Panic("Address is not Valid")
+	}
 	chain := blockchain.ContinueBlockChain("") // blockchain을 DB로 부터 받아온다.
 	defer chain.Database.Close()
 
 	balance := 0
-	UTXOs := chain.FindUTXO(address)
+	// Human readable Address를 PubKeyHash로 다시 변환.
+	pubKeyHash := wallet.Base58Decode([]byte(address))
+	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
+	UTXOs := chain.FindUTXO(pubKeyHash)
 
 	for _, out := range UTXOs {
 		balance += out.Value
@@ -101,6 +113,12 @@ func (cli *CommandLine) getBalance(address string) {
 
 // {from}에서 {to}로 {amount}만큼 보냅니다.
 func (cli *CommandLine) send(from, to string, amount int) {
+	if !wallet.ValidateAddress(from) {
+		log.Panic("Address is not Valid")
+	}
+	if !wallet.ValidateAddress(to) {
+		log.Panic("Address is not Valid")
+	}
 	chain := blockchain.ContinueBlockChain("") // blockchain을 DB로 부터 받아온다.
 	defer chain.Database.Close()
 

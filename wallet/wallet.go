@@ -1,11 +1,11 @@
 package wallet
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"fmt"
 	"log"
 
 	"golang.org/x/crypto/ripemd160"
@@ -29,14 +29,14 @@ func (w Wallet) Address() []byte {
 	pubHash := PublicKeyHash(w.PublicKey)
 
 	versionedHash := append([]byte{version}, pubHash...)
-	checksum := CheckSum(versionedHash)
+	checksum := Checksum(versionedHash)
 
 	fullHash := append(versionedHash, checksum...)
 	address := Base58Encode(fullHash)
 
-	fmt.Printf("pub key: %x\n", w.PublicKey)
-	fmt.Printf("pub hash: %x\n", pubHash)
-	fmt.Printf("address: %s\n", address)
+	//	fmt.Printf("pub key: %x\n", w.PublicKey)
+	//	fmt.Printf("pub hash: %x\n", pubHash)
+	//	fmt.Printf("address: %s\n", address)
 
 	return address
 }
@@ -78,9 +78,20 @@ func PublicKeyHash(pubKey []byte) []byte {
 }
 
 // {checksumLength}길이의 CheckSum 을 구합니다.
-func CheckSum(payload []byte) []byte {
+func Checksum(payload []byte) []byte {
 	firstHash := sha256.Sum256(payload)
 	secondHash := sha256.Sum256(firstHash[:])
 
 	return secondHash[:checksumLength]
+}
+
+// Checksum을 확인해서 {address}에 에러가 없는지 확인한다.
+func ValidateAddress(address string) bool {
+	pubKeyHash := Base58Decode([]byte(address))
+	actualChecksum := pubKeyHash[len(pubKeyHash)-checksumLength:]
+	version := pubKeyHash[0]
+	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-checksumLength]
+	targetChecksum := Checksum(append([]byte{version}, pubKeyHash...))
+
+	return bytes.Equal(actualChecksum, targetChecksum)
 }

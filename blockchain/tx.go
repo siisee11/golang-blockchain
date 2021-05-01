@@ -1,30 +1,55 @@
 // tx.go
 package blockchain
 
-// 트랜잭션의 인풋은 이전 트랜잭션에서의 아웃풋을 사용하는 것임을 기억해야합니다.
-// {ID}를 가지는 트랜잭션의 {OUT}번째 {Sig} 소유의 아웃풋으로 생각할 수 있습니다.
-type TxInput struct {
-	ID  []byte
-	Out int
-	Sig string // 소유자의 서명
-}
+import (
+	"bytes"
 
-// 이것이 TXO(Transaction Output)입니다.
-// "트랜잭션의 아웃풋"과 TXO라는 표현을 병행해서 사용합니다.
+	"github.com/siisee11/golang-blockchain/wallet"
+)
+
 type TxOutput struct {
 	Value int // 잔액
 
-	// 소유자의 공개키
-	// 여기서는 쉽게 소유자의 주소를 사용합니다.
-	PubKey string
+	// address를 decode하여 얻을 수 있는 값입니다.
+	// 좀더 raw한 형태의 주소라고 생각하면됩니다.
+	// 자세한 내용은 wallet문서를 참조하세요.
+	PubKeyHash []byte
 }
 
-// Signature를 확인해서 같으면 풀 수 있는 (소유의) Input입니다.
-func (in *TxInput) CanUnlock(data string) bool {
-	return in.Sig == data
+// Input으로 사용하고자 하는 UTXO를 가르킵니다.
+type TxInput struct {
+	ID        []byte // UTXO가 생성된 트랜잭션의 ID
+	Out       int    // 그 트랜잭션에서 몇번째 UTXO였는 지
+	Signature []byte // UTXO를 사용하려는 사람의 서명
+	PubKey    []byte
 }
 
-// 공개키를 확인해서 같으면 풀 수 있는 (소유의) Input입니다.
-func (out *TxOutput) CanBeUnlocked(data string) bool {
-	return out.PubKey == data
+// {value}와 {address}를 사용해 TXO를 만듭니다.
+func NewTXOutput(value int, address string) *TxOutput {
+	txo := &TxOutput{value, nil}
+	txo.Lock([]byte(address))
+
+	return txo
+}
+
+// Pubkey를 이용해 소유권 판별.
+func (in *TxInput) UsesKey(pubKeyHash []byte) bool {
+	lockingHash := wallet.PublicKeyHash(in.PubKey)
+
+	return bytes.Compare(lockingHash, pubKeyHash) == 0
+}
+
+// {address}를 통해 pubKeyHash를 구해 TXO에 적습니다.
+func (out *TxOutput) Lock(address []byte) {
+	// Base58 Decode를 하고
+	pubKeyHash := wallet.Base58Decode(address)
+	// version byte와 checksum byte를 뺍니다.
+	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
+	out.PubKeyHash = pubKeyHash
+}
+
+// TXO의 pubKeyHash를 보고 소유권을 판단합니다.
+func (out *TxOutput) IsLockedWithKey(pubKeyHash []byte) bool {
+	// 인자로 받은 pubKeyHash와 TXO의 pubKeyHash를 비교합니다.
+	return bytes.Compare(out.PubKeyHash, pubKeyHash) == 0
 }
