@@ -21,7 +21,7 @@ type TxInput struct {
 	ID        []byte // UTXO가 생성된 트랜잭션의 ID
 	Out       int    // 그 트랜잭션에서 몇번째 UTXO였는 지
 	Signature []byte // UTXO를 사용하려는 사람의 서명
-	PubKey    []byte
+	PubKey    []byte // UTXO에 적혀있는 PublicKeyHash 값
 }
 
 // {value}와 {address}를 사용해 TXO를 만듭니다.
@@ -36,7 +36,7 @@ func NewTXOutput(value int, address string) *TxOutput {
 func (in *TxInput) UsesKey(pubKeyHash []byte) bool {
 	lockingHash := wallet.PublicKeyHash(in.PubKey)
 
-	return bytes.Compare(lockingHash, pubKeyHash) == 0
+	return bytes.Equal(lockingHash, pubKeyHash)
 }
 
 // {address}를 통해 pubKeyHash를 구해 TXO에 적습니다.
@@ -51,5 +51,5 @@ func (out *TxOutput) Lock(address []byte) {
 // TXO의 pubKeyHash를 보고 소유권을 판단합니다.
 func (out *TxOutput) IsLockedWithKey(pubKeyHash []byte) bool {
 	// 인자로 받은 pubKeyHash와 TXO의 pubKeyHash를 비교합니다.
-	return bytes.Compare(out.PubKeyHash, pubKeyHash) == 0
+	return bytes.Equal(out.PubKeyHash, pubKeyHash)
 }
