@@ -64,7 +64,7 @@ func CoinbaseTx(to, data string) *Transaction {
 }
 
 // Transaction을 만드는 함수 입니다.
-func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction {
+func NewTransaction(from, to string, amount int, UTXO *UTXOSet) *Transaction {
 	var inputs []TxInput
 	var outputs []TxOutput
 
@@ -77,7 +77,7 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction
 
 	// {from}이 {amount}를 지불하기 위해 필요한 {from}소유의 UTXO를 가지고 옵니다.
 	// {from}의 공개키 해시 {pubKeyHash}를 이용합니다.
-	acc, validOutputs := chain.FindSpendableOutputs(pubKeyHash, amount)
+	acc, validOutputs := UTXO.FindSpendableOutputs(pubKeyHash, amount)
 
 	// UTXO를 다 모았는데 amount보다 작다면 잔액 부족입니다.
 	if acc < amount {
@@ -113,7 +113,7 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction
 	// 인풋과 아웃풋을 바탕으로 Transaction이 생성됩니다.
 	tx := Transaction{nil, inputs, outputs}
 	tx.ID = tx.Hash()
-	chain.SignTransaction(&tx, w.PrivateKey)
+	UTXO.Blockchain.SignTransaction(&tx, w.PrivateKey)
 
 	return &tx
 }

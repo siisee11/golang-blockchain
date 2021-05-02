@@ -3,6 +3,7 @@ package blockchain
 
 import (
 	"bytes"
+	"encoding/gob"
 
 	"github.com/siisee11/golang-blockchain/wallet"
 )
@@ -14,6 +15,11 @@ type TxOutput struct {
 	// 좀더 raw한 형태의 주소라고 생각하면됩니다.
 	// 자세한 내용은 wallet문서를 참조하세요.
 	PubKeyHash []byte
+}
+
+// TxOutput 모음
+type TxOutputs struct {
+	Outputs []TxOutput
 }
 
 // Input으로 사용하고자 하는 UTXO를 가르킵니다.
@@ -30,6 +36,24 @@ func NewTXOutput(value int, address string) *TxOutput {
 	txo.Lock([]byte(address))
 
 	return txo
+}
+
+// TxOutputs를 []byte로
+func (outs TxOutputs) Serialize() []byte {
+	var buffer bytes.Buffer
+	encode := gob.NewEncoder(&buffer)
+	err := encode.Encode(outs)
+	Handle(err)
+	return buffer.Bytes()
+}
+
+// []byte를 TxOutputs로
+func DeserializeOutputs(data []byte) TxOutputs {
+	var outputs TxOutputs
+	decode := gob.NewDecoder(bytes.NewReader(data))
+	err := decode.Decode(&outputs)
+	Handle(err)
+	return outputs
 }
 
 // Pubkey를 이용해 소유권 판별.

@@ -107,7 +107,8 @@ func ContinueBlockChain(address string) *BlockChain {
 }
 
 // 새로운 블록을 만들어서 블록체인에 연결하는 함수
-func (chain *BlockChain) AddBlock(transactions []*Transaction) {
+// 새로 추가된 블록을 리턴함.
+func (chain *BlockChain) AddBlock(transactions []*Transaction) *Block {
 	var lastHash []byte
 
 	// Read만 하므로 View를 사용
@@ -135,6 +136,8 @@ func (chain *BlockChain) AddBlock(transactions []*Transaction) {
 		return err
 	})
 	Handle(err)
+
+	return newBlock
 }
 
 // 아래 함수는 BlockChainIterator를 생성하여 반환합니다.
@@ -166,28 +169,22 @@ func (iter *BlockChainIterator) Next() *Block {
 	return block
 }
 
-//
-func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transaction {
-	var unspentTxs []Transaction
-
-	// 사용된 TXO의 (txID => []Out) 매핑입니다.
-	// inTx에 속한 TXO는 사용된 TXO임을 기억하세요.
+// block의 모든 UTXO (txID => TxOutputs mapping)을 찾아 반환합니다.
+func (chain *BlockChain) FindUTXO() map[string]TxOutputs {
+	UTXOs := make(map[string]TxOutputs)
 	spentTXOs := make(map[string][]int)
 
 	iter := chain.Iterator()
 
-	// 가장 최신의 블록부터 for loop를 수행합니다.
 	for {
 		block := iter.Next()
 
-		// Block에 저장된 트랜잭션에 대해 for loop 수행
+		// 블록의 모든 트랜잭션에 대하여
 		for _, tx := range block.Transactions {
 			txID := hex.EncodeToString(tx.ID)
 
 		Outputs:
-			// 트랜잭션의 모든 TXO에대해 for loop
 			for outIdx, out := range tx.Outputs {
-				// txID를 가진 TXO가 사용된 기록이 있다면
 				if spentTXOs[txID] != nil {
 					for _, spentOut := range spentTXOs[txID] {
 						if spentOut == outIdx {
@@ -195,82 +192,26 @@ func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transactio
 						}
 					}
 				}
-
-				if out.IsLockedWithKey(pubKeyHash) {
-					unspentTxs = append(unspentTxs, *tx)
-				}
+				// outs에 UTXO추가
+				outs := UTXOs[txID]
+				outs.Outputs = append(outs.Outputs, out)
+				UTXOs[txID] = outs
 			}
-
-			// 해당 트랜잭션이 coinbase가 아니라면 (일반 트랜잭션이라면)
 			if !tx.IsCoinbase() {
-				// 트랜잭션의 input 중에
+				// Inputs에 참조된 모든 UTXO는 이번 트랜잭션에서 사용된 UTXO이다.
 				for _, in := range tx.Inputs {
-					// address 소유인 것들은 사용한 TXO이므로 사용된 TXO 매핑에 추가합니다.
-					if in.UsesKey(pubKeyHash) {
-						inTxID := hex.EncodeToString(in.ID)
-						spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Out)
-					}
+					inTxID := hex.EncodeToString(in.ID)
+					spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Out)
 				}
 			}
 		}
 
-		// Genesis 까지 for를 돌았다면 break 합니다.
 		if len(block.PrevHash) == 0 {
 			break
 		}
 	}
 
-	// {address}의 사용되지않은 트랜잭션을 반환합니다.
-	// TXO가 아닌 UTXO가 포함된 트랜잭션이 반환됨을 유의합니다.
-	return unspentTxs
-}
-
-func (chain *BlockChain) FindUTXO(pubKeyHash []byte) []TxOutput {
-	var UTXOs []TxOutput // Unspent Transaction Outputs
-	unspentTransactions := chain.FindUnspentTransactions(pubKeyHash)
-
-	// 사용되지 않은 트랜잭션들의 Output(UTXO)중에
-	// 나{address}의 UTXO들을 저장하여 반환.
-	for _, tx := range unspentTransactions {
-		for _, out := range tx.Outputs {
-			if out.IsLockedWithKey(pubKeyHash) {
-				UTXOs = append(UTXOs, out)
-			}
-		}
-	}
-
 	return UTXOs
-}
-
-// amount를 집불하기위해 사용될 UTXO를 검색합니다.
-// 사용할 수 있는 금액과 사용할 수 있는 TXO를 찾을 수 있는 매핑을 반환합니다.
-func (chain *BlockChain) FindSpendableOutputs(pubKeyHash []byte, amount int) (int, map[string][]int) {
-	// UTXO의 txID => outIdx(해당 트랜잭션에서 몇번째 TXO가 UTXO인지) 매핑
-	unspentOuts := make(map[string][]int)
-	unspentTxs := chain.FindUnspentTransactions(pubKeyHash)
-	accumulated := 0
-
-Work:
-	// {address}의 사용되지 않은 트랜잭션들에 대해 for loop
-	for _, tx := range unspentTxs {
-		txID := hex.EncodeToString(tx.ID)
-
-		// 트랜잭션의 모든 Output(TXO)에 대해 for loop
-		for outIdx, out := range tx.Outputs {
-			// {address}소유이고 지금까지의 UTXO의 합이 amount보다 작다면 해당 UTXO를 추가
-			if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
-				accumulated += out.Value
-				unspentOuts[txID] = append(unspentOuts[txID], outIdx)
-
-				// amount를 지불하기 위한 UTXO를 충분히 모았다면 for 종료
-				if accumulated >= amount {
-					break Work // Work로 레이블된 for loop 탈출
-				}
-			}
-		}
-	}
-
-	return accumulated, unspentOuts
 }
 
 // Block을 순회하면서 Transaction ID를 가진 Transaction을 검색합니다.
@@ -281,7 +222,7 @@ func (chain *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
 		block := iter.Next()
 
 		for _, tx := range block.Transactions {
-			if bytes.Compare(tx.ID, ID) == 0 {
+			if bytes.Equal(tx.ID, ID) {
 				return *tx, nil
 			}
 		}

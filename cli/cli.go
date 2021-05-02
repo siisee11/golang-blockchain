@@ -24,6 +24,7 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println(" send -from FROM -to TO -amount AMOUNT - sends AMOUNT of coin from FROM to TO")
 	fmt.Println(" createwallet - Creates a new Wallet")
 	fmt.Println(" listaddresses - Lists the addresses in our wallet file")
+	fmt.Println(" reindexutxo - Rebuilds the UTXO set")
 }
 
 // Args(arguments)가 1개면 명령어를 입력하지 않은 것이므로 종료합니다.
@@ -35,6 +36,18 @@ func (cli *CommandLine) validateArgs() {
 		// applicaion 강제 종료가 아니여서 DB가 정상 종료(close)될 수 있도록 해준다.
 		runtime.Goexit()
 	}
+}
+
+// UTXOSet을 rebuild합니다.
+func (cli *CommandLine) reindexUTXO() {
+	chain := blockchain.ContinueBlockChain("")
+	defer chain.Database.Close()
+
+	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset.Reindex()
+
+	count := UTXOset.CountTransactions()
+	fmt.Printf("Done! There are %d transactions in the UTXO set.\n", count)
 }
 
 // Wallet을 생성합니다.
@@ -88,6 +101,10 @@ func (cli *CommandLine) createBlockChain(address string) {
 	}
 	chain := blockchain.InitBlockChain(address)
 	chain.Database.Close()
+
+	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset.Reindex()
+
 	fmt.Println("Finished!")
 }
 
@@ -96,13 +113,14 @@ func (cli *CommandLine) getBalance(address string) {
 		log.Panic("Address is not Valid")
 	}
 	chain := blockchain.ContinueBlockChain("") // blockchain을 DB로 부터 받아온다.
+	UTXOset := blockchain.UTXOSet{chain}
 	defer chain.Database.Close()
 
 	balance := 0
 	// Human readable Address를 PubKeyHash로 다시 변환.
 	pubKeyHash := wallet.Base58Decode([]byte(address))
 	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
-	UTXOs := chain.FindUTXO(pubKeyHash)
+	UTXOs := UTXOset.FindUnspentTransactions(pubKeyHash)
 
 	for _, out := range UTXOs {
 		balance += out.Value
@@ -120,10 +138,12 @@ func (cli *CommandLine) send(from, to string, amount int) {
 		log.Panic("Address is not Valid")
 	}
 	chain := blockchain.ContinueBlockChain("") // blockchain을 DB로 부터 받아온다.
+	UTXOset := blockchain.UTXOSet{chain}
 	defer chain.Database.Close()
 
-	tx := blockchain.NewTransaction(from, to, amount, chain)
-	chain.AddBlock([]*blockchain.Transaction{tx})
+	tx := blockchain.NewTransaction(from, to, amount, &UTXOset)
+	block := chain.AddBlock([]*blockchain.Transaction{tx})
+	UTXOset.Update(block)
 	fmt.Println("Success!")
 }
 
@@ -131,6 +151,7 @@ func (cli *CommandLine) Run() {
 	cli.validateArgs()
 
 	// Go의 option 처리하는 함수들.
+	reIndexUtxoCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	createBlockchainCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
@@ -145,6 +166,12 @@ func (cli *CommandLine) Run() {
 	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
 
 	switch os.Args[1] {
+	case "reindexutxo":
+		err := reIndexUtxoCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+
 	case "getbalance":
 		err := getBalanceCmd.Parse(os.Args[2:])
 		if err != nil {
@@ -179,6 +206,10 @@ func (cli *CommandLine) Run() {
 	default:
 		cli.printUsage()
 		runtime.Goexit()
+	}
+
+	if reIndexUtxoCmd.Parsed() {
+		cli.reindexUTXO()
 	}
 
 	if getBalanceCmd.Parsed() {
