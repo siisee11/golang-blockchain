@@ -168,19 +168,18 @@ func (u *UTXOSet) Update(block *Block) {
 						}
 					}
 				}
-				// 이번 트랜잭션으로 생기는 UTXO들
-				newOutputs := TxOutputs{}
-				for _, out := range tx.Outputs {
-					newOutputs.Outputs = append(newOutputs.Outputs, out)
-				}
-
-				// "utxo-" prefix하여 UTXO들을 저장한다.
-				txID := append(utxoPrefix, tx.ID...)
-				if err := txn.Set(txID, newOutputs.Serialize()); err != nil {
-					log.Panic(err)
-				}
+			}
+			// 이번 트랜잭션으로 생기는 UTXO들
+			newOutputs := TxOutputs{}
+			for _, out := range tx.Outputs {
+				newOutputs.Outputs = append(newOutputs.Outputs, out)
 			}
 
+			// "utxo-" prefix하여 UTXO들을 저장한다.
+			txID := append(utxoPrefix, tx.ID...)
+			if err := txn.Set(txID, newOutputs.Serialize()); err != nil {
+				log.Panic(err)
+			}
 		}
 		return nil
 	})

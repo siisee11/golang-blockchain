@@ -12,7 +12,7 @@ import (
 
 // 우리가 찾고자하는 정답을 정의하겠습니다.
 // 우리는 256bit중 왼쪽 {Difficulty}만큼의 bit가 0인 답을 원합니다.
-const Difficulty = 18
+const Difficulty = 12
 
 type ProofOfWork struct {
 	Block  *Block

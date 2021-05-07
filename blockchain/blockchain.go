@@ -49,6 +49,7 @@ func InitBlockChain(address string) *BlockChain {
 
 	// File명을 통해 DB를 엽니다.
 	opts := badger.DefaultOptions(dbPath)
+	// log 무시
 	opts.Logger = nil
 	db, err := badger.Open(opts)
 	Handle(err)
@@ -111,7 +112,7 @@ func ContinueBlockChain(address string) *BlockChain {
 func (chain *BlockChain) AddBlock(transactions []*Transaction) *Block {
 	var lastHash []byte
 
-	// Read만 하므로 View를 사용
+	// 가장 최근 블록의 Hash가져옴
 	err := chain.Database.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("lh"))
 		Handle(err)
@@ -253,6 +254,10 @@ func (chain *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateK
 
 // 트랜잭션을 검증합니다.
 func (chain *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	if tx.IsCoinbase() {
+		return true
+	}
+
 	prevTXs := make(map[string]Transaction)
 
 	for _, in := range tx.Inputs {

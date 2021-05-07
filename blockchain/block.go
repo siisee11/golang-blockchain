@@ -3,7 +3,6 @@ package blockchain
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/gob"
 	"log"
 )
@@ -17,16 +16,17 @@ type Block struct {
 }
 
 // Block의 Transaction들을 합쳐서 하나의 해시를 만듭니다.
+// Merkle Tree를 이용합니다.
 func (b *Block) HashTransactions() []byte {
 	var txHashes [][]byte
-	var txHash [32]byte
 
 	for _, tx := range b.Transactions {
-		txHashes = append(txHashes, tx.ID)
+		txHashes = append(txHashes, tx.Serialize())
 	}
-	txHash = sha256.Sum256(bytes.Join(txHashes, []byte{}))
+	tree := NewMerkleTree(txHashes)
 
-	return txHash[:]
+	// merkle tree를 구성하고 루트노드의 데이터 값이 최종 해시값
+	return tree.RootNode.Data
 }
 
 // Transaction과 이전 해시값을 인자로 받는다.

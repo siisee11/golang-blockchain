@@ -51,11 +51,14 @@ func (tx *Transaction) Hash() []byte {
 // mining하면 to에게 코인을 보상으로 주는 Coinbase Transaction.
 func CoinbaseTx(to, data string) *Transaction {
 	if data == "" {
-		data = fmt.Sprintf("Coins to %s", to)
+		randData := make([]byte, 24)
+		_, err := rand.Read(randData)
+		Handle(err)
+		data = fmt.Sprintf("%x", randData)
 	}
 
 	txin := TxInput{[]byte{}, -1, nil, []byte(data)}
-	txout := NewTXOutput(100, to)
+	txout := NewTXOutput(20, to)
 
 	tx := Transaction{nil, []TxInput{txin}, []TxOutput{*txout}}
 	tx.ID = tx.Hash()
@@ -235,6 +238,7 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 func (tx Transaction) String() string {
 	var lines []string
 
+	lines = append(lines, fmt.Sprintf(""))
 	lines = append(lines, fmt.Sprintf("+- Transaction %x", tx.ID))
 	lines = append(lines, fmt.Sprintf("|"))
 	for i, input := range tx.Inputs {
