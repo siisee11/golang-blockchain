@@ -24,12 +24,6 @@ type BlockChain struct {
 	Database *badger.DB // Badger DB를 가르키는 포인터
 }
 
-// BlockChain DB의 Block을 순회하는 자료구조
-type BlockChainIterator struct {
-	CurrentHash []byte
-	Database    *badger.DB
-}
-
 // MANIFEST file 존재 여부로 DB 존재 확인
 func DBexists() bool {
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
@@ -141,35 +135,6 @@ func (chain *BlockChain) AddBlock(transactions []*Transaction) *Block {
 	return newBlock
 }
 
-// 아래 함수는 BlockChainIterator를 생성하여 반환합니다.
-func (chain *BlockChain) Iterator() *BlockChainIterator {
-	iter := &BlockChainIterator{chain.LastHash, chain.Database}
-	return iter
-}
-
-// Next()함수는 최신 블록에서 Genesis블록 쪽으로
-// 다음 블록을 탐색해 포인터를 반환합니다.
-func (iter *BlockChainIterator) Next() *Block {
-	var block *Block
-
-	// 현재 해시값 {CurrentHash}로 블록을 검색합니다.
-	err := iter.Database.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(iter.CurrentHash)
-		Handle(err)
-		encodedBlock, err := item.ValueCopy(nil)
-		block = Deserialize(encodedBlock)
-
-		return err
-	})
-	Handle(err)
-
-	// block에 저장된 PrevHash를 가져와서
-	// 다음 탐색에 사용합니다.
-	iter.CurrentHash = block.PrevHash
-
-	return block
-}
-
 // block의 모든 UTXO (txID => TxOutputs mapping)을 찾아 반환합니다.
 func (chain *BlockChain) FindUTXO() map[string]TxOutputs {
 	UTXOs := make(map[string]TxOutputs)
@@ -254,6 +219,7 @@ func (chain *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateK
 
 // 트랜잭션을 검증합니다.
 func (chain *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	// Coinbase 트랜잭션은 유효하다고 판단합니다.
 	if tx.IsCoinbase() {
 		return true
 	}

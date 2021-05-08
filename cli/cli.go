@@ -141,9 +141,9 @@ func (cli *CommandLine) send(from, to string, amount int) {
 	UTXOset := blockchain.UTXOSet{chain}
 	defer chain.Database.Close()
 
-	cbTx := blockchain.CoinbaseTx(from, "")
-	tx := blockchain.NewTransaction(from, to, amount, &UTXOset)
-	block := chain.AddBlock([]*blockchain.Transaction{cbTx, tx})
+	cbTx := blockchain.CoinbaseTx(from, "")                      // 코인베이스 트랜잭션을 생성하고
+	tx := blockchain.NewTransaction(from, to, amount, &UTXOset)  // send 트랜잭션도 생성하여
+	block := chain.AddBlock([]*blockchain.Transaction{cbTx, tx}) // 새로운 블록에 추가합니다.
 	UTXOset.Update(block)
 	fmt.Println("Success!")
 }
