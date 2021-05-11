@@ -343,6 +343,7 @@ func HandleVersion(request []byte, chain *blockchain.BlockChain) {
 }
 
 // "tx" 커맨드를 처리함.
+// 트랜잭션을 받았을 떄 불리는 함수.
 func HandleTx(request []byte, chain *blockchain.BlockChain) {
 	var buff bytes.Buffer
 	var payload Tx
@@ -371,8 +372,7 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 			}
 		}
 	} else {
-		// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면
-		//
+		// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면(채굴 노드이면)
 		if len(memoryPool) >= 2 && len(minterAddress) > 0 {
 			MintTx(chain)
 		}
