@@ -5,14 +5,17 @@ import (
 	"bytes"
 	"encoding/gob"
 	"log"
+	"time"
 )
 
 // Block의 구조
 type Block struct {
+	Timestamp    int64          // 블록생성 시각
 	Hash         []byte         // 현재 블록의 해시
 	Transactions []*Transaction // Data 대신 트랜잭션이 기록됨
 	PrevHash     []byte         // 이전 블록의 해시
 	Nonce        int
+	Height       int // chain의 길이
 }
 
 // Block의 Transaction들을 합쳐서 하나의 해시를 만듭니다.
@@ -30,8 +33,8 @@ func (b *Block) HashTransactions() []byte {
 }
 
 // Transaction과 이전 해시값을 인자로 받는다.
-func CreateBlock(txs []*Transaction, prevHash []byte) *Block {
-	block := &Block{[]byte{}, txs, prevHash, 0}
+func CreateBlock(txs []*Transaction, prevHash []byte, height int) *Block {
+	block := &Block{time.Now().Unix(), []byte{}, txs, prevHash, 0, height}
 	pow := NewProof(block)
 	nonce, hash := pow.Run()
 
@@ -43,7 +46,7 @@ func CreateBlock(txs []*Transaction, prevHash []byte) *Block {
 
 // Genesis Block은 coinbase 트랜잭션을 인자로 받습니다.
 func Genesis(coinbase *Transaction) *Block {
-	return CreateBlock([]*Transaction{coinbase}, []byte{})
+	return CreateBlock([]*Transaction{coinbase}, []byte{}, 0)
 }
 
 // Util 함수

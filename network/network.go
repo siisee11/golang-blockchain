@@ -128,7 +128,7 @@ func SendBlock(addr string, b *blockchain.Block) {
 	SendData(addr, request)
 }
 
-// {items}(block이나 tx)을 보냄
+// {items}([]block의 해시 이나 tx)을 보냄
 func SendInv(addr, kind string, items [][]byte) {
 	inventory := Inv{nodeAddress, kind, items}
 	payload := GobEncode(inventory)
@@ -148,15 +148,17 @@ func SendTx(addr string, tnx *blockchain.Transaction) {
 
 // Version을 보냄(Height, version)
 func SendVersion(addr string, chain *blockchain.BlockChain) {
-	bestHeight := chain.GetBestHeight() // next part
+	bestHeight := chain.GetBestHeight()
 	data := Version{version, bestHeight, nodeAddress}
 	payload := GobEncode(data)
 	request := append(CmdToBytes("version"), payload...)
 
+	log.Printf("Send Version {version: %d, height: %d} to %s\n", version, bestHeight, addr)
+
 	SendData(addr, request)
 }
 
-// Block을 달라고 요청을 보냄
+// Block들을 달라고 요청을 보냄
 func SendGetBlocks(addr string) {
 	payload := GobEncode(GetBlocks{nodeAddress})
 	request := append(CmdToBytes("getblocks"), payload...)
@@ -176,10 +178,12 @@ func SendGetData(addr, kind string, id []byte) {
 func SendData(addr string, data []byte) {
 	conn, err := net.Dial(protocol, addr)
 
+	// {addr}에 연결이 안되면
 	if err != nil {
-		fmt.Printf("%s is not available\n", addr)
+		log.Printf("%s is not reachable\n", addr)
 		var updatedNodes []string
 
+		// 통신이 되지 않는 {addr}를 KnownNodes에서 삭제합니다.
 		for _, node := range KnownNodes {
 			if node != addr {
 				updatedNodes = append(updatedNodes, node)
@@ -214,7 +218,7 @@ func HandleAddr(request []byte) {
 		log.Panic(err)
 	}
 
-	// KnownNodes에 추가
+	// 받은 주소들을 KnownNodes에 추가합니다.
 	KnownNodes = append(KnownNodes, payload.AddrList...)
 	fmt.Printf("there are %d known nodes\n", len(KnownNodes))
 
@@ -235,25 +239,29 @@ func HandleBlock(request []byte, chain *blockchain.BlockChain) {
 	}
 
 	blockData := payload.Block
+	// 받아온 블록
 	block := blockchain.Deserialize(blockData)
 
-	fmt.Println("received a new block!")
-	chain.AddBlock(block) // 다음 파트에서 AddBlock함수를 다시 정의함
+	chain.AddBlock(block)
 
-	fmt.Printf("added block %x\n", block.Hash)
+	log.Printf("New block received. Add it(%x) to chain\n", block.Hash)
 
 	if len(blocksInTransit) > 0 {
+		// 아직 받아야하는 블록이 남아 있으면
 		blockHash := blocksInTransit[0]
+		// 다음 블록을 달라고 요청
 		SendGetData(payload.AddrFrom, "block", blockHash)
 
 		blocksInTransit = blocksInTransit[1:]
 	} else {
+		log.Println("All blocks received.")
+		// 모든 블록을 다 받았다면 UTXO를 다시 인덱싱한다.
 		UTXOset := blockchain.UTXOSet{chain}
 		UTXOset.Reindex()
 	}
 }
 
-// "getblock" 커맨드를 처리함.
+// "getblocks" 커맨드를 처리함.
 func HandleGetBlock(request []byte, chain *blockchain.BlockChain) {
 	var buff bytes.Buffer
 	var payload GetBlocks
@@ -265,7 +273,9 @@ func HandleGetBlock(request []byte, chain *blockchain.BlockChain) {
 		log.Panic(err)
 	}
 
-	blocks := chain.GetBlockHashes() // next part
+	// Block의 모든 해시 값을 가져옵니다.
+	blocks := chain.GetBlockHashes()
+	log.Printf("Send %d block hashes to %s", len(blocks), payload.AddrFrom)
 	SendInv(payload.AddrFrom, "block", blocks)
 }
 
@@ -281,15 +291,19 @@ func HandleGetData(request []byte, chain *blockchain.BlockChain) {
 		log.Panic(err)
 	}
 
+	// Type이 "block"이면 Block을 보내줌.
 	if payload.Type == "block" {
+		// payload.ID는 blockHash
 		block, err := chain.GetBlock([]byte(payload.ID))
 		if err != nil {
 			return
 		}
 
+		// 요청한 노드에게 블록을 보냅니다.
 		SendBlock(payload.AddrFrom, &block)
 	}
 
+	// Type이 "tx"이면 트랜잭션을 찾아서 보냄
 	if payload.Type == "tx" {
 		txID := hex.EncodeToString(payload.ID)
 		tx := memoryPool[txID]
@@ -311,10 +325,13 @@ func HandleVersion(request []byte, chain *blockchain.BlockChain) {
 		log.Panic(err)
 	}
 
-	bestHeight := chain.GetBestHeight() // next part
+	bestHeight := chain.GetBestHeight()
 	otherHeight := payload.BestHeight
 
+	log.Printf("Got  Version {version: %d, height: %d} from %s\n", payload.Version, payload.BestHeight, payload.AddrFrom)
+
 	if bestHeight < otherHeight {
+		log.Printf("Get blocks from peer %s", payload.AddrFrom)
 		SendGetBlocks(payload.AddrFrom)
 	} else if bestHeight > otherHeight {
 		SendVersion(payload.AddrFrom, chain)
@@ -338,18 +355,24 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 	}
 
 	txData := payload.Transaction
+	// {tx} 받은 트랜잭션
 	tx := blockchain.DeserializeTransaction(txData)
 	memoryPool[hex.EncodeToString(tx.ID)] = tx
 
-	fmt.Printf("%s, %d", nodeAddress, len(memoryPool))
+	log.Printf("%s received Tx, now %d txs in memoryPool\n", nodeAddress, len(memoryPool))
 
+	// 중앙 노드이면
 	if nodeAddress == KnownNodes[0] {
+		// KnownNodes 들에게 {tx}을 보낸다.
 		for _, node := range KnownNodes {
+			// 현재노드 {nodeAddress}가 아니고 {tx}를 전달받은 노드가 아니면
 			if node != nodeAddress && node != payload.AddrFrom {
 				SendInv(node, "tx", [][]byte{tx.ID})
 			}
 		}
 	} else {
+		// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면
+		//
 		if len(memoryPool) >= 2 && len(minterAddress) > 0 {
 			MintTx(chain)
 		}
@@ -368,15 +391,19 @@ func HandleInv(request []byte, chain *blockchain.BlockChain) {
 		log.Panic(err)
 	}
 
-	fmt.Printf("Received Inventory with %d %s\n", len(payload.Items), payload.Type)
+	log.Printf("Received Inventory with %d %s\n", len(payload.Items), payload.Type)
 
 	if payload.Type == "block" {
+		// 받아야하는 블록의 해시들. []blockhashes
 		blocksInTransit = payload.Items
 
+		// 첫번째 블록의 해시
 		blockHash := payload.Items[0]
+		// blockHash 값으로 데이터를 주라고 요청합니.
 		SendGetData(payload.AddrFrom, "block", blockHash)
 
 		newInTransit := [][]byte{}
+		// 받아야하는 블록해시 리스트에서 방금 getdata 요청을 보낸 블록해시를 제거합니다.
 		for _, b := range blocksInTransit {
 			if !bytes.Equal(b, blockHash) {
 				newInTransit = append(newInTransit, b)
@@ -394,11 +421,15 @@ func HandleInv(request []byte, chain *blockchain.BlockChain) {
 	}
 }
 
+// Block을 채굴하여 트랜잭션을 기록 후 새로운 블록을 KnownNodes에게 알림.
 func MintTx(chain *blockchain.BlockChain) {
 	var txs []*blockchain.Transaction
 
+	log.Println("Mint Transaction")
+
+	// memoryPool에서 트랜잭션을 꺼내서 verify한 후 txs에 추가합니다.
 	for id := range memoryPool {
-		fmt.Printf("tx: ^s\n", memoryPool[id].ID)
+		fmt.Printf("tx: %x\n", memoryPool[id].ID)
 		tx := memoryPool[id]
 		if chain.VerifyTransaction(&tx) {
 			txs = append(txs, &tx)
@@ -410,26 +441,31 @@ func MintTx(chain *blockchain.BlockChain) {
 		return
 	}
 
+	// 채굴자 주소로 CoinbaseTx를 만들어 txs에 추가합니다.
 	cbTx := blockchain.CoinbaseTx(minterAddress, "")
 	txs = append(txs, cbTx)
 
+	// {txs} 트랜잭션들을 인자로 Block을 생성합니다.
 	newBlock := chain.MintBlock(txs)
 	UTXOset := blockchain.UTXOSet{chain}
 	UTXOset.Reindex()
 
-	fmt.Println("New Block minted")
+	log.Printf("%s mint new block\n", minterAddress)
 
+	// 새로운 블록에 포함된 트랜잭션을 memoryPool 에서 삭제합니다.
 	for _, tx := range txs {
 		txID := hex.EncodeToString(tx.ID)
 		delete(memoryPool, txID)
 	}
 
+	// KnownNodes들에게 새로운 block을 전송합니다.
 	for _, node := range KnownNodes {
 		if node != nodeAddress {
 			SendInv(node, "block", [][]byte{newBlock.Hash})
 		}
 	}
 
+	// 아직 memoryPool에 트랜잭션이 남았으면 다시 채굴.
 	if len(memoryPool) > 0 {
 		MintTx(chain)
 	}
@@ -468,10 +504,11 @@ func HandleConnection(conn net.Conn, chain *blockchain.BlockChain) {
 }
 
 // Node(server)를 실행합니다.
-func StartServer(nodeID, minterAddress string) {
+// nodeID는 노드의 포트번호(NODE_ID), _minterAddress는 option
+func StartServer(nodeID, _minterAddress string) {
 	nodeAddress = fmt.Sprintf("localhost:%s", nodeID)
-	// miner의 주소를 global 변수에 저장.
-	minterAddress = minterAddress
+	// minter의 주소를 global 변수에 저장.
+	minterAddress = _minterAddress
 	// localhast:{nodeID} 주소에서 listen합니다.
 	ln, err := net.Listen(protocol, nodeAddress)
 	if err != nil {
@@ -481,8 +518,9 @@ func StartServer(nodeID, minterAddress string) {
 
 	chain := blockchain.ContinueBlockChain(nodeID)
 	defer chain.Database.Close()
-	go CloseDB(chain)
+	go CloseDB(chain) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
 
+	// Central node (NODE_ID==3000)이 아니면 Version을 보냄.
 	if nodeAddress != KnownNodes[0] {
 		SendVersion(KnownNodes[0], chain)
 	}

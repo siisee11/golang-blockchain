@@ -48,6 +48,16 @@ func (tx *Transaction) Hash() []byte {
 	return hash[:]
 }
 
+// []byte 를 Decode해서 Transaction 리턴
+func DeserializeTransaction(data []byte) Transaction {
+	var transaction Transaction
+
+	decoder := gob.NewDecoder(bytes.NewReader(data))
+	err := decoder.Decode(&transaction)
+	Handle(err)
+	return transaction
+}
+
 // mining하면 to에게 코인을 보상으로 주는 Coinbase Transaction.
 func CoinbaseTx(to, data string) *Transaction {
 	if data == "" {
@@ -67,14 +77,10 @@ func CoinbaseTx(to, data string) *Transaction {
 }
 
 // Transaction을 만드는 함수 입니다.
-func NewTransaction(from, to string, amount int, UTXO *UTXOSet) *Transaction {
+func NewTransaction(w *wallet.Wallet, to string, amount int, UTXO *UTXOSet) *Transaction {
 	var inputs []TxInput
 	var outputs []TxOutput
 
-	// Wallets에서 {from}의 address갖는 wallet을 가져옵니다.
-	wallets, err := wallet.CreateWallets()
-	Handle(err)
-	w := wallets.GetWallet(from)
 	// Public key로 부터 publicKeyHash를 생성합니다.
 	pubKeyHash := wallet.PublicKeyHash(w.PublicKey)
 
@@ -165,24 +171,6 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 	// 모든 UTXO-IN에 서명을 완료 후 종료.
 }
 
-// TxInput의 pubkey와 signature를 nil로 초기화하며 복사
-func (tx *Transaction) TrimmedCopy() Transaction {
-	var inputs []TxInput
-	var outputs []TxOutput
-
-	for _, in := range tx.Inputs {
-		inputs = append(inputs, TxInput{in.ID, in.Out, nil, nil})
-	}
-
-	for _, out := range tx.Outputs {
-		outputs = append(outputs, TxOutput{out.Value, out.PubKeyHash})
-	}
-
-	txCopy := Transaction{tx.ID, inputs, outputs}
-
-	return txCopy
-}
-
 // 해당 트랜잭션이 유효한 트랜잭션인지 확인하는 함수.
 func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 	if tx.IsCoinbase() {
@@ -223,15 +211,33 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 		x.SetBytes(in.PubKey[:(KeyLen / 2)])
 		y.SetBytes(in.PubKey[(KeyLen / 2):])
 
-		rawPubKey := ecdsa.PublicKey{curve, &x, &y}
+		rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
 		// Public Key와 트랜잭션의 해시값, Signature(R,S)를 가지고 유효성을 판별한다.
-		if ecdsa.Verify(&rawPubKey, txCopy.ID, &r, &s) == false {
+		if !ecdsa.Verify(&rawPubKey, txCopy.ID, &r, &s) {
 			return false
 		}
 	}
 
 	// 모든 인풋(UTXO-IN)에 대해 검사를 통과하였으면 검증 성공
 	return true
+}
+
+// TxInput의 pubkey와 signature를 nil로 초기화하며 복사
+func (tx *Transaction) TrimmedCopy() Transaction {
+	var inputs []TxInput
+	var outputs []TxOutput
+
+	for _, in := range tx.Inputs {
+		inputs = append(inputs, TxInput{in.ID, in.Out, nil, nil})
+	}
+
+	for _, out := range tx.Outputs {
+		outputs = append(outputs, TxOutput{out.Value, out.PubKeyHash})
+	}
+
+	txCopy := Transaction{tx.ID, inputs, outputs}
+
+	return txCopy
 }
 
 // Transaction information을 출력할 때 사용하는 함수.

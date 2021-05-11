@@ -12,7 +12,7 @@ import (
 )
 
 // wallet을 저장할 파일의 이름
-const walletFile = "./tmp/wallets.data"
+const walletFile = "./tmp/wallets_%s.data"
 
 // Wallets는 Wallet들의 매핑을 가진다.
 type Wallets struct {
@@ -20,12 +20,12 @@ type Wallets struct {
 }
 
 // Wallets를 만듭니다.
-func CreateWallets() (*Wallets, error) {
+func CreateWallets(nodeId string) (*Wallets, error) {
 	wallets := Wallets{}
 	wallets.Wallets = make(map[string]*Wallet)
 
 	// 파일에 저장된 wallets를 불러옵니다.
-	err := wallets.LoadFile()
+	err := wallets.LoadFile(nodeId)
 
 	return &wallets, err
 }
@@ -60,7 +60,8 @@ func (ws Wallets) GetWallet(address string) Wallet {
 }
 
 // 파일에 저장된 Wallets를 읽어오는 함수
-func (ws *Wallets) LoadFile() error {
+func (ws *Wallets) LoadFile(nodeId string) error {
+	walletFile := fmt.Sprintf(walletFile, nodeId)
 	if _, err := os.Stat(walletFile); os.IsNotExist(err) {
 		return err
 	}
@@ -86,8 +87,9 @@ func (ws *Wallets) LoadFile() error {
 }
 
 // Wallets을 파일에 저장하는 함수
-func (ws *Wallets) SaveFile() {
+func (ws *Wallets) SaveFile(nodeId string) {
 	var content bytes.Buffer
+	walletFile := fmt.Sprintf(walletFile, nodeId)
 
 	gob.Register(elliptic.P256())
 

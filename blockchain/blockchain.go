@@ -6,16 +6,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/dgraph-io/badger"
 )
 
 const (
-	dbPath      = "./tmp/blocks"
-	dbFile      = "./tmp/blocks/MANIFEST"
-	genesisData = "First Transaction from Genesis" // Genesis block의 시그니쳐 데이터
+	dbPath = "./tmp/blocks_%s"
+	dbFile = "MANIFEST"
 )
 
 // DB를 가르키는 포인터를 저장해서 포인터를 통해 블록 관리
@@ -25,34 +27,35 @@ type BlockChain struct {
 }
 
 // MANIFEST file 존재 여부로 DB 존재 확인
-func DBexists() bool {
-	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
+func DBexists(path string) bool {
+	if _, err := os.Stat(path + "/" + dbFile); os.IsNotExist(err) {
 		return false
 	}
 	return true
 }
 
 // Blockchain을 새로 만들어 반환하는 함수
-func InitBlockChain(address string) *BlockChain {
+func InitBlockChain(address, nodeId string) *BlockChain {
+	path := fmt.Sprintf(dbPath, nodeId)
 	var lastHash []byte
 
-	if DBexists() {
+	if DBexists(path) {
 		fmt.Println("Blockcahin already exists")
 		runtime.Goexit()
 	}
 
 	// File명을 통해 DB를 엽니다.
-	opts := badger.DefaultOptions(dbPath)
+	opts := badger.DefaultOptions(path)
 	// log 무시
 	opts.Logger = nil
-	db, err := badger.Open(opts)
+	db, err := openDB(path, opts)
 	Handle(err)
 
 	// db.Update는 Read/Write함수, View는 Read Only 함수입니다.
 	// 수정사항(Genesis 생성)이 있기 때문에 Update함수를 사용합니다.
 	err = db.Update(func(txn *badger.Txn) error {
 		// coinbase 트랜잭션을 만들어서, 이를 통해 Genesis block을 만들어 저장합니다.
-		cbtx := CoinbaseTx(address, genesisData)
+		cbtx := CoinbaseTx(address, "")
 		genesis := Genesis(cbtx)
 		fmt.Println("Genesis created")
 		err = txn.Set(genesis.Hash, genesis.Serialize())
@@ -72,8 +75,9 @@ func InitBlockChain(address string) *BlockChain {
 }
 
 // 이미 블록체인이 DB에 있으면 그 정보를 이용해서 *BlockChain을 반환합니다.
-func ContinueBlockChain(address string) *BlockChain {
-	if !DBexists() {
+func ContinueBlockChain(nodeId string) *BlockChain {
+	path := fmt.Sprintf(dbPath, nodeId)
+	if !DBexists(path) {
 		fmt.Println("No existing blockchain found, create one!")
 		runtime.Goexit()
 	}
@@ -81,9 +85,9 @@ func ContinueBlockChain(address string) *BlockChain {
 	var lastHash []byte
 
 	// File명을 통해 DB를 엽니다.
-	opts := badger.DefaultOptions(dbPath)
+	opts := badger.DefaultOptions(path)
 	opts.Logger = nil
-	db, err := badger.Open(opts)
+	db, err := openDB(path, opts)
 	Handle(err)
 
 	// 값을 가져오는 것이므로 View를 사용합니다.
@@ -101,23 +105,139 @@ func ContinueBlockChain(address string) *BlockChain {
 	return &chain
 }
 
-// 새로운 블록을 만들어서 블록체인에 연결하는 함수
+// {chain}에 {block}을 추가합니다.
+// {block}이 이미 blockchain에 기록되어 있다면 skip합니다.
+func (chain *BlockChain) AddBlock(block *Block) {
+	err := chain.Database.Update(func(txn *badger.Txn) error {
+		// 블록이 이미 있다면 그냥 리턴
+		if _, err := txn.Get(block.Hash); err == nil {
+			return nil
+		}
+
+		blockData := block.Serialize()
+		// 새로운 블록을 DB에 추가
+		err := txn.Set(block.Hash, blockData)
+		Handle(err)
+
+		item, err := txn.Get([]byte("lh"))
+		Handle(err)
+		lastHash, _ := item.ValueCopy(nil)
+
+		item, err = txn.Get(lastHash)
+		Handle(err)
+		lastBlockData, _ := item.ValueCopy(nil)
+
+		// local에 저장되어 있는 가장 최신블록 {lastBlock}
+		lastBlock := Deserialize(lastBlockData)
+
+		// 새로 받은 block의 Height가 더 높다면
+		if block.Height > lastBlock.Height {
+			// lh를 받은 블록의 해시값으로 업데이트합니다.
+			err = txn.Set([]byte("lh"), block.Hash)
+			Handle(err)
+			chain.LastHash = block.Hash
+		}
+
+		return nil
+	})
+	Handle(err)
+}
+
+// lh에 해당하는 블록의 Height 반환.
+func (chain *BlockChain) GetBestHeight() int {
+	var lastBlock Block
+
+	err := chain.Database.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("lh"))
+		Handle(err)
+		lastHash, _ := item.ValueCopy(nil)
+
+		item, err = txn.Get(lastHash)
+		Handle(err)
+		lastBlockData, _ := item.ValueCopy(nil)
+
+		lastBlock = *Deserialize(lastBlockData)
+
+		return nil
+	})
+	Handle(err)
+
+	return lastBlock.Height
+}
+
+// Block의 Hash값으로 블록 객체를 검색
+func (chain *BlockChain) GetBlock(blockHash []byte) (Block, error) {
+	var block Block
+
+	err := chain.Database.View(func(txn *badger.Txn) error {
+		if item, err := txn.Get(blockHash); err != nil {
+			return errors.New("Block is not found")
+		} else {
+			blockData, _ := item.ValueCopy(nil)
+
+			block = *Deserialize(blockData)
+		}
+		return nil
+	})
+	if err != nil {
+		return block, err
+	}
+
+	return block, nil
+}
+
+// {chain}의 모든 블록의 해시값을 배열로 리턴합니다.
+func (chain *BlockChain) GetBlockHashes() [][]byte {
+	var blocks [][]byte
+
+	iter := chain.Iterator()
+
+	for {
+		block := iter.Next()
+
+		blocks = append(blocks, block.Hash)
+
+		if len(block.PrevHash) == 0 {
+			break
+		}
+	}
+
+	return blocks
+}
+
+// 새로운 블록을 채굴하여 블록체인에 연결하는 함수
 // 새로 추가된 블록을 리턴함.
-func (chain *BlockChain) AddBlock(transactions []*Transaction) *Block {
+func (chain *BlockChain) MintBlock(transactions []*Transaction) *Block {
 	var lastHash []byte
+	var lastHeight int
+
+	for _, tx := range transactions {
+		if !chain.VerifyTransaction(tx) {
+			log.Panic("Invalid Transaction")
+		}
+	}
 
 	// 가장 최근 블록의 Hash가져옴
 	err := chain.Database.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("lh"))
 		Handle(err)
 		lastHash, err = item.ValueCopy(nil)
+		Handle(err)
+
+		item, err = txn.Get(lastHash)
+		Handle(err)
+		lastBlockData, _ := item.ValueCopy(nil)
+
+		lastBlock := Deserialize(lastBlockData)
+
+		lastHeight = lastBlock.Height
 
 		return err
 	})
 	Handle(err)
 
 	// lashHash를 토대로 다음 문제를 풀어 새로운 블록을 생성.
-	newBlock := CreateBlock(transactions, lastHash)
+	newBlock := CreateBlock(transactions, lastHash, lastHeight+1)
 
 	// 블록의 해시를 키값으로 새로운 블록을 저장하고
 	// lh의 값 또한 새로운 블록의 해시로 업데이트 해줍니다.
@@ -234,4 +354,30 @@ func (chain *BlockChain) VerifyTransaction(tx *Transaction) bool {
 
 	// 이전 거래 기록을 이용해서 검증합니다.
 	return tx.Verify(prevTXs)
+}
+
+func retry(dir string, originalOpts badger.Options) (*badger.DB, error) {
+	lockPath := filepath.Join(dir, "LOCK")
+	if err := os.Remove(lockPath); err != nil {
+		return nil, fmt.Errorf(`removing "LOCK": %s`, err)
+	}
+	retryOpts := originalOpts
+	retryOpts.Truncate = true
+	db, err := badger.Open(retryOpts)
+	return db, err
+}
+
+func openDB(dir string, opts badger.Options) (*badger.DB, error) {
+	if db, err := badger.Open(opts); err != nil {
+		if strings.Contains(err.Error(), "LOCK") {
+			if db, err := retry(dir, opts); err == nil {
+				log.Println("database unlocked, value log truncated")
+				return db, nil
+			}
+			log.Println("could not unlock database:", err)
+		}
+		return nil, err
+	} else {
+		return db, nil
+	}
 }
