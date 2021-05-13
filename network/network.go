@@ -256,7 +256,7 @@ func HandleBlock(request []byte, chain *blockchain.BlockChain) {
 	} else {
 		log.Println("All blocks received.")
 		// 모든 블록을 다 받았다면 UTXO를 다시 인덱싱한다.
-		UTXOset := blockchain.UTXOSet{chain}
+		UTXOset := blockchain.UTXOSet{Blockchain: chain}
 		UTXOset.Reindex()
 	}
 }
@@ -368,12 +368,13 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 		for _, node := range KnownNodes {
 			// 현재노드 {nodeAddress}가 아니고 {tx}를 전달받은 노드가 아니면
 			if node != nodeAddress && node != payload.AddrFrom {
+				// 받은 tx의 ID 전송
 				SendInv(node, "tx", [][]byte{tx.ID})
 			}
 		}
 	} else {
 		// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면(채굴 노드이면)
-		if len(memoryPool) >= 2 && len(minterAddress) > 0 {
+		if len(memoryPool) >= 1 && len(minterAddress) > 0 {
 			MintTx(chain)
 		}
 	}
@@ -412,10 +413,13 @@ func HandleInv(request []byte, chain *blockchain.BlockChain) {
 		blocksInTransit = newInTransit
 	}
 
+	// txID를 받으면
 	if payload.Type == "tx" {
 		txID := payload.Items[0]
 
+		// memoryPool에 해당 txID를 가진 트랜잭션이 저장되어 있지 않다면
 		if memoryPool[hex.EncodeToString(txID)].ID == nil {
+			// txID로 트랜잭션을 가지고 온다.
 			SendGetData(payload.AddrFrom, "tx", txID)
 		}
 	}
@@ -429,7 +433,7 @@ func MintTx(chain *blockchain.BlockChain) {
 
 	// memoryPool에서 트랜잭션을 꺼내서 verify한 후 txs에 추가합니다.
 	for id := range memoryPool {
-		fmt.Printf("tx: %x\n", memoryPool[id].ID)
+		fmt.Printf("txID: %x\n", memoryPool[id].ID)
 		tx := memoryPool[id]
 		if chain.VerifyTransaction(&tx) {
 			txs = append(txs, &tx)
@@ -447,7 +451,7 @@ func MintTx(chain *blockchain.BlockChain) {
 
 	// {txs} 트랜잭션들을 인자로 Block을 생성합니다.
 	newBlock := chain.MintBlock(txs)
-	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
 	UTXOset.Reindex()
 
 	log.Printf("%s mint new block\n", minterAddress)

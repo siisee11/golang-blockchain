@@ -23,7 +23,7 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println(" createblockchain -address ADDRESS - creates a blockchain(miner: ADDRESS)")
 	fmt.Println(" printchain - Prints the blocks in the chain")
 	fmt.Println(" send -from FROM -to TO -amount AMOUNT <-mint> - sends AMOUNT of coin from FROM to TO. Then -mint flag is set, mint off of this node")
-	fmt.Println(" createwallet - Creates a new Wallet")
+	fmt.Println(" createwallet <-alias> - Creates a new Wallet (with ALIAS)")
 	fmt.Println(" listaddresses - Lists the addresses in our wallet file")
 	fmt.Println(" reindexutxo - Rebuilds the UTXO set")
 	fmt.Println(" startnode <-minter ADDRESS> - Start a node with ID specified in NODE_ID env. var. -minter enables mining")
@@ -46,6 +46,9 @@ func (cli *CommandLine) validateArgs() {
 func (cli *CommandLine) StartNode(nodeId, minterAddress string) {
 	fmt.Printf("Starting Node localhost:%s\n", nodeId)
 
+	wallets, _ := wallet.CreateWallets(nodeId)
+	minterAddress = wallets.GetAddress(minterAddress)
+
 	if len(minterAddress) > 0 {
 		if wallet.ValidateAddress(minterAddress) {
 			fmt.Println("Mining is on. Address to receive rewards: ", minterAddress)
@@ -61,7 +64,7 @@ func (cli *CommandLine) reindexUTXO(nodeId string) {
 	chain := blockchain.ContinueBlockChain(nodeId)
 	defer chain.Database.Close()
 
-	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
 	UTXOset.Reindex()
 
 	count := UTXOset.CountTransactions()
@@ -69,21 +72,21 @@ func (cli *CommandLine) reindexUTXO(nodeId string) {
 }
 
 // Wallet을 생성합니다.
-func (cli *CommandLine) createWallet(nodeId string) {
+func (cli *CommandLine) createWallet(nodeId, alias string) {
 	wallets, _ := wallet.CreateWallets(nodeId)
-	address := wallets.AddWallet()
+	address := wallets.AddWallet(alias)
 	wallets.SaveFile(nodeId)
 
-	fmt.Printf("New address is: %s\n", address)
+	fmt.Printf("New address is: %s   (%s)\n", address, alias)
 }
 
 // Wallets에 저장된 Wallet의 address를 출력합니다.
 func (cli *CommandLine) listAddresses(nodeId string) {
 	wallets, _ := wallet.CreateWallets(nodeId)
-	addresses := wallets.GetAllAddresses()
+	aliases := wallets.GetAllAliases()
 
-	for _, address := range addresses {
-		fmt.Println(address)
+	for _, alias := range aliases {
+		fmt.Printf("%s => %s\n", alias, wallets.GetAddress(alias))
 	}
 }
 
@@ -103,6 +106,9 @@ func (cli *CommandLine) printChain(nodeId string) {
 		fmt.Printf("PoW: %s\n", strconv.FormatBool(pow.Validate()))
 		for _, tx := range block.Transactions {
 			fmt.Println(tx)
+			if !tx.IsCoinbase() {
+				fmt.Printf("Transcation verification: %s\n", strconv.FormatBool(chain.VerifyTransaction(tx)))
+			}
 		}
 		fmt.Println()
 
@@ -113,25 +119,29 @@ func (cli *CommandLine) printChain(nodeId string) {
 	}
 }
 
-func (cli *CommandLine) createBlockChain(address, nodeId string) {
+func (cli *CommandLine) createBlockChain(alias, nodeId string) {
+	wallets, _ := wallet.CreateWallets(nodeId)
+	address := wallets.GetAddress(alias)
 	if !wallet.ValidateAddress(address) {
 		log.Panic("Address is not Valid")
 	}
 	chain := blockchain.InitBlockChain(address, nodeId)
 	defer chain.Database.Close()
 
-	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
 	UTXOset.Reindex()
 
 	fmt.Println("Finished!")
 }
 
-func (cli *CommandLine) getBalance(address, nodeId string) {
+func (cli *CommandLine) getBalance(alias, nodeId string) {
+	wallets, _ := wallet.CreateWallets(nodeId)
+	address := wallets.GetAddress(alias)
 	if !wallet.ValidateAddress(address) {
 		log.Panic("Address is not Valid")
 	}
 	chain := blockchain.ContinueBlockChain(nodeId) // blockchain을 DB로 부터 받아온다.
-	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
 	defer chain.Database.Close()
 
 	balance := 0
@@ -150,7 +160,9 @@ func (cli *CommandLine) getBalance(address, nodeId string) {
 // {from}에서 {to}로 {amount}만큼 보냅니다.
 // {mintNow}가 true이면 send트랜잭션을 담은 블록을 생성하고
 // {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(localhost:3000)에게 보냅니다.
-func (cli *CommandLine) send(from, to string, amount int, nodeId string, mintNow bool) {
+func (cli *CommandLine) send(alias, to string, amount int, nodeId string, mintNow bool) {
+	wallets, _ := wallet.CreateWallets(nodeId)
+	from := wallets.GetAddress(alias)
 	if !wallet.ValidateAddress(from) {
 		log.Panic("Address is not Valid")
 	}
@@ -158,7 +170,7 @@ func (cli *CommandLine) send(from, to string, amount int, nodeId string, mintNow
 		log.Panic("Address is not Valid")
 	}
 	chain := blockchain.ContinueBlockChain(nodeId) // blockchain을 DB로 부터 받아온다.
-	UTXOset := blockchain.UTXOSet{chain}
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
 	defer chain.Database.Close()
 
 	wallets, err := wallet.CreateWallets(nodeId)
@@ -207,6 +219,7 @@ func (cli *CommandLine) Run() {
 	sendTo := sendCmd.String("to", "", "Dest wallet address")
 	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
 	sendMint := sendCmd.Bool("mint", false, "Mine immediately on the same node")
+	createWalletAlias := createWalletCmd.String("alias", "", "Name wallet")
 	startNodeMinter := startNodeCmd.String("minter", "", "Enable minting mode and send reward to minter")
 
 	switch os.Args[1] {
@@ -298,7 +311,7 @@ func (cli *CommandLine) Run() {
 	}
 
 	if createWalletCmd.Parsed() {
-		cli.createWallet(nodeId)
+		cli.createWallet(nodeId, *createWalletAlias)
 	}
 
 	if listAddressesCmd.Parsed() {

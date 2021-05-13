@@ -14,15 +14,16 @@ import (
 // wallet을 저장할 파일의 이름
 const walletFile = "./tmp/wallets_%s.data"
 
-// Wallets는 Wallet들의 매핑을 가진다.
 type Wallets struct {
-	Wallets map[string]*Wallet
+	Wallets map[string]*Wallet // address => *Wallet
+	Alias   map[string]string  // alias => address
 }
 
 // Wallets를 만듭니다.
 func CreateWallets(nodeId string) (*Wallets, error) {
 	wallets := Wallets{}
 	wallets.Wallets = make(map[string]*Wallet)
+	wallets.Alias = make(map[string]string)
 
 	// 파일에 저장된 wallets를 불러옵니다.
 	err := wallets.LoadFile(nodeId)
@@ -31,7 +32,7 @@ func CreateWallets(nodeId string) (*Wallets, error) {
 }
 
 // Wallets에 Wallet을 추가합니다.
-func (ws *Wallets) AddWallet() string {
+func (ws *Wallets) AddWallet(alias string) string {
 	// wallet을 만들고
 	wallet := MakeWallet()
 	// wallet의 주소를 string형태로 저장합니다.
@@ -39,8 +40,21 @@ func (ws *Wallets) AddWallet() string {
 
 	// address => wallet 을 매핑에 넣습니다.
 	ws.Wallets[address] = wallet
+	if alias != "" {
+		ws.Alias[alias] = address
+	} else {
+		ws.Alias[address] = address
+	}
 
 	return address
+}
+
+func (ws Wallets) GetAddress(alias string) string {
+	address, exists := ws.Alias[alias]
+	if exists {
+		return address
+	}
+	return alias
 }
 
 // Wallets에 저장된 모든 address값을 반환합니다.
@@ -52,6 +66,17 @@ func (ws Wallets) GetAllAddresses() []string {
 	}
 
 	return addresses
+}
+
+// Wallets에 저장된 모든 alias값을 반환합니다.
+func (ws Wallets) GetAllAliases() []string {
+	var aliases []string
+
+	for alias := range ws.Alias {
+		aliases = append(aliases, alias)
+	}
+
+	return aliases
 }
 
 // address에 해당하는 wallet을 반환합니다.
@@ -82,6 +107,7 @@ func (ws *Wallets) LoadFile(nodeId string) error {
 	}
 
 	ws.Wallets = wallets.Wallets
+	ws.Alias = wallets.Alias
 
 	return nil
 }
