@@ -149,35 +149,18 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 		prevTX := prevTXs[hex.EncodeToString(in.ID)]
 		txCopy.Inputs[inId].Signature = nil
 		txCopy.Inputs[inId].PubKey = prevTX.Outputs[in.Out].PubKeyHash
-		txCopy.ID = txCopy.Hash()
-		txCopy.Inputs[inId].PubKey = nil
 
-		r, s, err := ecdsa.Sign(rand.Reader, &privKey, txCopy.ID)
+		dataToSign := fmt.Sprintf("%x\n", txCopy)
+
+		r, s, err := ecdsa.Sign(rand.Reader, &privKey, []byte(dataToSign))
 		Handle(err)
 		signature := append(r.Bytes(), s.Bytes()...)
 
 		tx.Inputs[inId].Signature = signature
+		txCopy.Inputs[inId].PubKey = nil
 	}
 
 	// 모든 UTXO-IN에 서명을 완료 후 종료.
-}
-
-// TxInput의 pubkey와 signature를 nil로 초기화하며 복사
-func (tx *Transaction) TrimmedCopy() Transaction {
-	var inputs []TxInput
-	var outputs []TxOutput
-
-	for _, in := range tx.Inputs {
-		inputs = append(inputs, TxInput{in.ID, in.Out, nil, nil})
-	}
-
-	for _, out := range tx.Outputs {
-		outputs = append(outputs, TxOutput{out.Value, out.PubKeyHash})
-	}
-
-	txCopy := Transaction{tx.ID, inputs, outputs}
-
-	return txCopy
 }
 
 // 해당 트랜잭션이 유효한 트랜잭션인지 확인하는 함수.
@@ -199,36 +182,52 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 
 	// Public key로 각 Input에 포함되어있는 Signature가 유효한지 판별.
 	for inId, in := range tx.Inputs {
-		// Sign 할때와 같은 Hash값을 얻기 위해서 똑같은 과정을 거친다.
 		prevTx := prevTXs[hex.EncodeToString(in.ID)]
 		txCopy.Inputs[inId].Signature = nil
 		txCopy.Inputs[inId].PubKey = prevTx.Outputs[in.Out].PubKeyHash
-		txCopy.ID = txCopy.Hash()
-		txCopy.Inputs[inId].PubKey = nil
 
-		// signature는 S값과 R값으로 나뉘어진다.
 		r := big.Int{}
 		s := big.Int{}
+
 		sigLen := len(in.Signature)
 		r.SetBytes(in.Signature[:(sigLen / 2)])
 		s.SetBytes(in.Signature[(sigLen / 2):])
 
 		x := big.Int{}
 		y := big.Int{}
-		KeyLen := len(in.PubKey)
+		keyLen := len(in.PubKey)
+		x.SetBytes(in.PubKey[:(keyLen / 2)])
+		y.SetBytes(in.PubKey[(keyLen / 2):])
 
-		x.SetBytes(in.PubKey[:(KeyLen / 2)])
-		y.SetBytes(in.PubKey[(KeyLen / 2):])
+		dataToVerify := fmt.Sprintf("%x\n", txCopy)
 
-		rawPubKey := ecdsa.PublicKey{curve, &x, &y}
-		// Public Key와 트랜잭션의 해시값, Signature(R,S)를 가지고 유효성을 판별한다.
-		if ecdsa.Verify(&rawPubKey, txCopy.ID, &r, &s) == false {
+		rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
+		if ecdsa.Verify(&rawPubKey, []byte(dataToVerify), &r, &s) == false {
 			return false
 		}
+		txCopy.Inputs[inId].PubKey = nil
 	}
 
 	// 모든 인풋(UTXO-IN)에 대해 검사를 통과하였으면 검증 성공
 	return true
+}
+
+// TxInput의 pubkey와 signature를 nil로 초기화하며 복사
+func (tx *Transaction) TrimmedCopy() Transaction {
+	var inputs []TxInput
+	var outputs []TxOutput
+
+	for _, in := range tx.Inputs {
+		inputs = append(inputs, TxInput{in.ID, in.Out, nil, nil})
+	}
+
+	for _, out := range tx.Outputs {
+		outputs = append(outputs, TxOutput{out.Value, out.PubKeyHash})
+	}
+
+	txCopy := Transaction{tx.ID, inputs, outputs}
+
+	return txCopy
 }
 
 // Transaction information을 출력할 때 사용하는 함수.
