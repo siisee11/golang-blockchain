@@ -149,11 +149,6 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 	txCopy := tx.TrimmedCopy()
 
 	// 트랜잭션의 각 인풋에 서명함.
-	// 각 인풋에 대해 아래 과정을 거침.
-	// 1. 인풋의 이전 트랜잭션을 확인하여 PubKeyHash를 가져와 저장.
-	// 2. PubKey가 기록된 후 트랜잭션을 해시하여 해시값을 구함.
-	// 3. 트랜잭션의 해시값과 private key를 이용해 signature를 구함.
-	// 4. Signature를 트랜잭션에 추가함.
 	for inId, in := range txCopy.Inputs {
 		prevTX := prevTXs[hex.EncodeToString(in.ID)]
 		txCopy.Inputs[inId].Signature = nil
