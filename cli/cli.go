@@ -85,6 +85,9 @@ func (cli *CommandLine) printChain() {
 		fmt.Printf("PoW: %s\n", strconv.FormatBool(pow.Validate()))
 		for _, tx := range block.Transactions {
 			fmt.Println(tx)
+			if !tx.IsCoinbase() {
+				fmt.Printf("Transcation verification: %s\n", strconv.FormatBool(chain.VerifyTransaction(tx)))
+			}
 		}
 		fmt.Println()
 
