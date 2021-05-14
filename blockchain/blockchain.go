@@ -166,12 +166,13 @@ func (iter *BlockChainIterator) Next() *Block {
 	return block
 }
 
-//
+// UTXO가 포함된 모든 트랜잭션을 반환합니다.
 func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transaction {
 	var unspentTxs []Transaction
 
 	// 사용된 TXO의 (txID => []Out) 매핑입니다.
-	// inTx에 속한 TXO는 사용된 TXO임을 기억하세요.
+	// "{txID}를 가진 트랜잭션의 {[]Out}번째 TXO들은 사용되었다."
+	// TxInput에 속한 TXO는 사용된 TXO임을 기억하세요.
 	spentTXOs := make(map[string][]int)
 
 	iter := chain.Iterator()
@@ -187,7 +188,7 @@ func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transactio
 		Outputs:
 			// 트랜잭션의 모든 TXO에대해 for loop
 			for outIdx, out := range tx.Outputs {
-				// txID를 가진 TXO가 사용된 기록이 있다면
+				// TXO가 사용된 TXO리스트에 속해 있다면 다음 TXO를 조사
 				if spentTXOs[txID] != nil {
 					for _, spentOut := range spentTXOs[txID] {
 						if spentOut == outIdx {
@@ -196,6 +197,8 @@ func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transactio
 					}
 				}
 
+				// 사용된 기록이 없고, {pubKeyHash}의 소유이면
+				// 사용되지 않은 트랜잭션에 추가합니다.
 				if out.IsLockedWithKey(pubKeyHash) {
 					unspentTxs = append(unspentTxs, *tx)
 				}
@@ -220,7 +223,7 @@ func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transactio
 		}
 	}
 
-	// {address}의 사용되지않은 트랜잭션을 반환합니다.
+	// {pubKeyHash}소유의 사용되지않은 트랜잭션을 반환합니다.
 	// TXO가 아닌 UTXO가 포함된 트랜잭션이 반환됨을 유의합니다.
 	return unspentTxs
 }
@@ -251,13 +254,13 @@ func (chain *BlockChain) FindSpendableOutputs(pubKeyHash []byte, amount int) (in
 	accumulated := 0
 
 Work:
-	// {address}의 사용되지 않은 트랜잭션들에 대해 for loop
+	// {putKeyHash}의 사용되지 않은 트랜잭션들에 대해 for loop
 	for _, tx := range unspentTxs {
 		txID := hex.EncodeToString(tx.ID)
 
 		// 트랜잭션의 모든 Output(TXO)에 대해 for loop
 		for outIdx, out := range tx.Outputs {
-			// {address}소유이고 지금까지의 UTXO의 합이 amount보다 작다면 해당 UTXO를 추가
+			// {pubKeyHash}소유이고 지금까지의 UTXO의 합이 amount보다 작다면 해당 UTXO를 추가
 			if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
 				accumulated += out.Value
 				unspentOuts[txID] = append(unspentOuts[txID], outIdx)
