@@ -161,12 +161,13 @@ func (iter *BlockChainIterator) Next() *Block {
 	return block
 }
 
-//
+// UTXO가 포함된 모든 트랜잭션을 반환합니다.
 func (chain *BlockChain) FindUnspentTransactions(address string) []Transaction {
 	var unspentTxs []Transaction
 
 	// 사용된 TXO의 (txID => []Out) 매핑입니다.
-	// inTx에 속한 TXO는 사용된 TXO임을 기억하세요.
+	// "{txID}를 가진 트랜잭션의 {[]Out}번째 TXO들은 사용되었다."
+	// TxInput에 속한 TXO는 사용된 TXO임을 기억하세요.
 	spentTXOs := make(map[string][]int)
 
 	iter := chain.Iterator()
@@ -182,10 +183,13 @@ func (chain *BlockChain) FindUnspentTransactions(address string) []Transaction {
 		Outputs:
 			// 트랜잭션의 모든 TXO에대해 for loop
 			for outIdx, out := range tx.Outputs {
-				// txID를 가진 TXO가 사용된 기록이 있다면
+				// {txID}의 트랜잭션에서 TXO가 사용된 기록이 있고
 				if spentTXOs[txID] != nil {
 					for _, spentOut := range spentTXOs[txID] {
+						// {spentOut}: 사용된 TXO의 index
 						if spentOut == outIdx {
+							// 사용된 TXO의 Index와 같은 outIdx를 가지는
+							// TXO는 사용된 TXO이므로 다음 TXO 조사
 							continue Outputs
 						}
 					}
