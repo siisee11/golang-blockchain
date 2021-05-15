@@ -40,9 +40,10 @@ func (cli *CommandLine) validateArgs() {
 	}
 }
 
-// localhost:nodeID 주소로 노드를 시작합니다.
-// minterAddress가 있다면 이 노드는 minter로 동작하며
+// {nodeId}를 listen 포트로 서버를 시작합니다.
+// {minterAddress}가 있다면 이 서버는 minter로 동작하며
 // transaction을 모은 후 블록을 생성하여 {minterAddress}에 보상을 받습니다.
+// {dest}가 있다면 {dest}노드를 통해 p2p 네트워크에 접속합니다.
 func (cli *CommandLine) StartP2P(nodeId, minterAddress, dest string, secio bool) {
 	fmt.Printf("Starting Host localhost:%s\n", nodeId)
 
@@ -165,7 +166,7 @@ func (cli *CommandLine) getBalance(alias, nodeId string) {
 
 // {from}에서 {to}로 {amount}만큼 보냅니다.
 // {mintNow}가 true이면 send트랜잭션을 담은 블록을 생성하고
-// {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(KnownNodes[0])에게 보냅니다.
+// {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(targetPeer)에게 보냅니다.
 func (cli *CommandLine) send(alias, to, targetPeer string, amount int, nodeId string, mintNow bool) {
 	wallets, _ := wallet.CreateWallets(nodeId)
 	from := wallets.GetAddress(alias)
