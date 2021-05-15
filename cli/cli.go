@@ -26,7 +26,7 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println(" createwallet <-alias> - Creates a new Wallet (with ALIAS)")
 	fmt.Println(" listaddresses - Lists the addresses in our wallet file")
 	fmt.Println(" reindexutxo - Rebuilds the UTXO set")
-	fmt.Println(" startnode <-minter ADDRESS> - Start a node with ID specified in NODE_ID env. var. -minter enables mining")
+	fmt.Println(" startp2p <-dest ADDR> <-minter ADDRESS> - Start a p2p host with ID specified in NODE_ID env var.")
 }
 
 // Args(arguments)가 1개면 명령어를 입력하지 않은 것이므로 종료합니다.
@@ -42,9 +42,9 @@ func (cli *CommandLine) validateArgs() {
 
 // localhost:nodeID 주소로 노드를 시작합니다.
 // minterAddress가 있다면 이 노드는 minter로 동작하며
-// transaction을 모은 후 블록을 생성하여 minterAddress에 보상을 받습니다.
-func (cli *CommandLine) StartNode(nodeId, minterAddress string) {
-	fmt.Printf("Starting Node localhost:%s\n", nodeId)
+// transaction을 모은 후 블록을 생성하여 {minterAddress}에 보상을 받습니다.
+func (cli *CommandLine) StartP2P(nodeId, minterAddress, dest string, secio bool) {
+	fmt.Printf("Starting Host localhost:%s\n", nodeId)
 
 	wallets, _ := wallet.CreateWallets(nodeId)
 	minterAddress = wallets.GetAddress(minterAddress)
@@ -56,7 +56,13 @@ func (cli *CommandLine) StartNode(nodeId, minterAddress string) {
 			log.Panic("Wrong minter address!")
 		}
 	}
-	network.StartServer(nodeId, minterAddress)
+
+	port, err := strconv.Atoi(nodeId)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	network.StartHost(port, minterAddress, secio, 0, dest)
 }
 
 // UTXOSet을 rebuild합니다.
@@ -159,8 +165,8 @@ func (cli *CommandLine) getBalance(alias, nodeId string) {
 
 // {from}에서 {to}로 {amount}만큼 보냅니다.
 // {mintNow}가 true이면 send트랜잭션을 담은 블록을 생성하고
-// {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(localhost:3000)에게 보냅니다.
-func (cli *CommandLine) send(alias, to string, amount int, nodeId string, mintNow bool) {
+// {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(KnownNodes[0])에게 보냅니다.
+func (cli *CommandLine) send(alias, to, targetPeer string, amount int, nodeId string, mintNow bool) {
 	wallets, _ := wallet.CreateWallets(nodeId)
 	from := wallets.GetAddress(alias)
 	if !wallet.ValidateAddress(from) {
@@ -186,7 +192,7 @@ func (cli *CommandLine) send(alias, to string, amount int, nodeId string, mintNo
 		block := chain.MintBlock(txs)
 		UTXOset.Update(block)
 	} else {
-		network.SendTx(network.KnownNodes[0], tx)
+		network.SendTxOnce(targetPeer, tx)
 		fmt.Println("send tx")
 	}
 
@@ -204,7 +210,7 @@ func (cli *CommandLine) Run() {
 	}
 
 	// Go의 option 처리하는 함수들.
-	startNodeCmd := flag.NewFlagSet("startnode", flag.ExitOnError)
+	startP2PCmd := flag.NewFlagSet("startp2p", flag.ExitOnError)
 	reIndexUtxoCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	createBlockchainCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
@@ -213,18 +219,21 @@ func (cli *CommandLine) Run() {
 	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
 	listAddressesCmd := flag.NewFlagSet("listaddresses", flag.ExitOnError)
 
+	destHost := startP2PCmd.String("dest", "", "P2P network destination")
+	secio := startP2PCmd.Bool("secio", false, "P2P network security I/O")
+	startP2PMinter := startP2PCmd.String("minter", "", "Enable minting mode and send reward to minter")
 	getBalanceAddress := getBalanceCmd.String("address", "", "The address")
 	createBlockchainAddress := createBlockchainCmd.String("address", "", "Miner address")
 	sendFrom := sendCmd.String("from", "", "Source wallet address")
 	sendTo := sendCmd.String("to", "", "Dest wallet address")
+	peerId := sendCmd.String("peer", "", "Target Peer Id")
 	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
 	sendMint := sendCmd.Bool("mint", false, "Mine immediately on the same node")
 	createWalletAlias := createWalletCmd.String("alias", "", "Name wallet")
-	startNodeMinter := startNodeCmd.String("minter", "", "Enable minting mode and send reward to minter")
 
 	switch os.Args[1] {
-	case "startnode":
-		err := startNodeCmd.Parse(os.Args[2:])
+	case "startp2p":
+		err := startP2PCmd.Parse(os.Args[2:])
 		if err != nil {
 			log.Panic(err)
 		}
@@ -269,13 +278,8 @@ func (cli *CommandLine) Run() {
 		runtime.Goexit()
 	}
 
-	if startNodeCmd.Parsed() {
-		nodeId := os.Getenv("NODE_ID")
-		if nodeId == "" {
-			startNodeCmd.Usage()
-			runtime.Goexit()
-		}
-		cli.StartNode(nodeId, *startNodeMinter)
+	if startP2PCmd.Parsed() {
+		cli.StartP2P(nodeId, *startP2PMinter, *destHost, *secio)
 	}
 
 	if reIndexUtxoCmd.Parsed() {
@@ -299,11 +303,11 @@ func (cli *CommandLine) Run() {
 	}
 
 	if sendCmd.Parsed() {
-		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 {
+		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 || (*peerId == "" && *sendMint) {
 			sendCmd.Usage()
 			runtime.Goexit()
 		}
-		cli.send(*sendFrom, *sendTo, *sendAmount, nodeId, *sendMint)
+		cli.send(*sendFrom, *sendTo, *peerId, *sendAmount, nodeId, *sendMint)
 	}
 
 	if printChainCmd.Parsed() {

@@ -1,18 +1,29 @@
 package network
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
+	mrand "math/rand"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p-core/crypto"
+	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/libp2p/go-libp2p-core/peer"
+	host "github.com/libp2p/go-libp2p-host"
+	peerstore "github.com/libp2p/go-libp2p-peerstore"
+	ma "github.com/multiformats/go-multiaddr"
 	"github.com/siisee11/golang-blockchain/blockchain"
 	DEATH "github.com/vrecan/death/v3"
 )
@@ -26,14 +37,18 @@ const (
 )
 
 var (
-	nodeAddress   string // Server를 돌리는 바로 이 노드의 주소
-	minterAddress string // minter의 주소
-	// KnownNodes : 네트워크에 속한 알고있는 노드들
-	// localhost:3000은 central node
-	KnownNodes      = []string{"localhost:3000"}
+	chain           *blockchain.BlockChain
+	ha              host.Host
+	nodeId          string
+	nodePeerId      string
+	minterAddress   string // minter의 주소
+	KnownNodes      = []string{}
+	KnownPeers      = []string{}
 	blocksInTransit = [][]byte{}
 	memoryPool      = make(map[string]blockchain.Transaction) // txID => Transaction
 )
+
+var mutex = &sync.Mutex{}
 
 // 아래는 통신을 위한 구조들.
 type Addr struct {
@@ -112,7 +127,7 @@ func ExtractCmd(request []byte) []byte {
 // KnownNodes에 자신의 address를 더해서 {addr}에게 addr 커맨드를 보냄
 func SendAddr(addr string) {
 	nodes := Addr{KnownNodes}
-	nodes.AddrList = append(nodes.AddrList, nodeAddress)
+	nodes.AddrList = append(nodes.AddrList, nodePeerId)
 	payload := GobEncode(nodes)
 	request := append(CmdToBytes("addr"), payload...)
 
@@ -121,7 +136,7 @@ func SendAddr(addr string) {
 
 // Block을 payload에 담아서 보냄
 func SendBlock(addr string, b *blockchain.Block) {
-	data := Block{nodeAddress, b.Serialize()}
+	data := Block{nodePeerId, b.Serialize()}
 	payload := GobEncode(data)
 	request := append(CmdToBytes("block"), payload...)
 
@@ -130,7 +145,7 @@ func SendBlock(addr string, b *blockchain.Block) {
 
 // {items}([]block의 해시 이나 tx)을 보냄
 func SendInv(addr, kind string, items [][]byte) {
-	inventory := Inv{nodeAddress, kind, items}
+	inventory := Inv{nodePeerId, kind, items}
 	payload := GobEncode(inventory)
 	request := append(CmdToBytes("inv"), payload...)
 
@@ -139,17 +154,26 @@ func SendInv(addr, kind string, items [][]byte) {
 
 // Transaction을 보냄
 func SendTx(addr string, tnx *blockchain.Transaction) {
-	data := Tx{nodeAddress, tnx.Serialize()}
+	data := Tx{nodePeerId, tnx.Serialize()}
 	payload := GobEncode(data)
 	request := append(CmdToBytes("tx"), payload...)
 
 	SendData(addr, request)
 }
 
+// Transaction을 보냄
+func SendTxOnce(addr string, tnx *blockchain.Transaction) {
+	data := Tx{nodePeerId, tnx.Serialize()}
+	payload := GobEncode(data)
+	request := append(CmdToBytes("tx"), payload...)
+
+	SendDataOnce(addr, request)
+}
+
 // Version을 보냄(Height, version)
 func SendVersion(addr string, chain *blockchain.BlockChain) {
 	bestHeight := chain.GetBestHeight()
-	data := Version{version, bestHeight, nodeAddress}
+	data := Version{version, bestHeight, nodePeerId}
 	payload := GobEncode(data)
 	request := append(CmdToBytes("version"), payload...)
 
@@ -160,7 +184,7 @@ func SendVersion(addr string, chain *blockchain.BlockChain) {
 
 // Block들을 달라고 요청을 보냄
 func SendGetBlocks(addr string) {
-	payload := GobEncode(GetBlocks{nodeAddress})
+	payload := GobEncode(GetBlocks{nodePeerId})
 	request := append(CmdToBytes("getblocks"), payload...)
 
 	SendData(addr, request)
@@ -168,40 +192,10 @@ func SendGetBlocks(addr string) {
 
 // data를 달라고 요청을 보냄
 func SendGetData(addr, kind string, id []byte) {
-	payload := GobEncode(GetData{nodeAddress, kind, id})
+	payload := GobEncode(GetData{nodePeerId, kind, id})
 	request := append(CmdToBytes("getdata"), payload...)
 
 	SendData(addr, request)
-}
-
-// request(cmd + payload)를 보냄
-func SendData(addr string, data []byte) {
-	conn, err := net.Dial(protocol, addr)
-
-	// {addr}에 연결이 안되면
-	if err != nil {
-		log.Printf("%s is not reachable\n", addr)
-		var updatedNodes []string
-
-		// 통신이 되지 않는 {addr}를 KnownNodes에서 삭제합니다.
-		for _, node := range KnownNodes {
-			if node != addr {
-				updatedNodes = append(updatedNodes, node)
-			}
-		}
-
-		KnownNodes = updatedNodes
-
-		return
-	}
-
-	defer conn.Close()
-
-	_, err = io.Copy(conn, bytes.NewReader(data))
-	if err != nil {
-		log.Panic(err)
-	}
-
 }
 
 // "addr" 커맨드를 처리함
@@ -325,10 +319,10 @@ func HandleVersion(request []byte, chain *blockchain.BlockChain) {
 		log.Panic(err)
 	}
 
+	log.Printf("Got  Version {version: %d, height: %d} from %s\n", payload.Version, payload.BestHeight, payload.AddrFrom)
+
 	bestHeight := chain.GetBestHeight()
 	otherHeight := payload.BestHeight
-
-	log.Printf("Got  Version {version: %d, height: %d} from %s\n", payload.Version, payload.BestHeight, payload.AddrFrom)
 
 	if bestHeight < otherHeight {
 		log.Printf("Get blocks from peer %s", payload.AddrFrom)
@@ -360,23 +354,23 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 	tx := blockchain.DeserializeTransaction(txData)
 	memoryPool[hex.EncodeToString(tx.ID)] = tx
 
-	log.Printf("%s received Tx, now %d txs in memoryPool\n", nodeAddress, len(memoryPool))
+	log.Printf("%s received Tx, now %d txs in memoryPool\n", nodePeerId, len(memoryPool))
 
 	// 중앙 노드이면
-	if nodeAddress == KnownNodes[0] {
+	if nodePeerId == KnownNodes[0] {
 		// KnownNodes 들에게 {tx}을 보낸다.
 		for _, node := range KnownNodes {
-			// 현재노드 {nodeAddress}가 아니고 {tx}를 전달받은 노드가 아니면
-			if node != nodeAddress && node != payload.AddrFrom {
+			// 현재노드 {nodePeerId}가 아니고 {tx}를 전달받은 노드가 아니면
+			if node != nodePeerId && node != payload.AddrFrom {
 				// 받은 tx의 ID 전송
 				SendInv(node, "tx", [][]byte{tx.ID})
 			}
 		}
-	} else {
-		// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면(채굴 노드이면)
-		if len(memoryPool) >= 1 && len(minterAddress) > 0 {
-			MintTx(chain)
-		}
+	}
+
+	// memoryPool에 2개이상의 Tx가 있고 minterAddress가 존재하면(채굴 노드이면)
+	if len(memoryPool) >= 2 && len(minterAddress) > 0 {
+		MintTx(chain)
 	}
 }
 
@@ -464,7 +458,7 @@ func MintTx(chain *blockchain.BlockChain) {
 
 	// KnownNodes들에게 새로운 block을 전송합니다.
 	for _, node := range KnownNodes {
-		if node != nodeAddress {
+		if node != nodePeerId {
 			SendInv(node, "block", [][]byte{newBlock.Hash})
 		}
 	}
@@ -475,17 +469,15 @@ func MintTx(chain *blockchain.BlockChain) {
 	}
 }
 
-// request를 받으면 처리하는 로직
-func HandleConnection(conn net.Conn, chain *blockchain.BlockChain) {
-	req, err := ioutil.ReadAll(conn)
-	defer conn.Close()
-
+// P2P방식으로 request를 받으면 처리하는 로직
+func HandleP2PConnection(rw *bufio.ReadWriter) {
+	req, err := ioutil.ReadAll(rw)
 	if err != nil {
 		log.Panic(err)
 	}
 
 	command := BytesToCmd(req[:commandLength])
-	fmt.Printf("Received %s command\n", command)
+	log.Printf("Received %s command\n", command)
 
 	switch command {
 	case "addr":
@@ -504,39 +496,6 @@ func HandleConnection(conn net.Conn, chain *blockchain.BlockChain) {
 		HandleVersion(req, chain)
 	default:
 		fmt.Println("Unknown command")
-	}
-}
-
-// Node(server)를 실행합니다.
-// nodeID는 노드의 포트번호(NODE_ID), _minterAddress는 option
-func StartServer(nodeID, _minterAddress string) {
-	nodeAddress = fmt.Sprintf("localhost:%s", nodeID)
-	// minter의 주소를 global 변수에 저장.
-	minterAddress = _minterAddress
-	// localhast:{nodeID} 주소에서 listen합니다.
-	ln, err := net.Listen(protocol, nodeAddress)
-	if err != nil {
-		log.Panic(err)
-	}
-	defer ln.Close()
-
-	chain := blockchain.ContinueBlockChain(nodeID)
-	defer chain.Database.Close()
-	go CloseDB(chain) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
-
-	// Central node (NODE_ID==3000)이 아니면 Version을 보냄.
-	if nodeAddress != KnownNodes[0] {
-		SendVersion(KnownNodes[0], chain)
-	}
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Panic(err)
-		}
-		// connection 처리는 asynchronous하게 go routine으로 처리
-		go HandleConnection(conn, chain)
-
 	}
 }
 
@@ -573,4 +532,186 @@ func CloseDB(chain *blockchain.BlockChain) {
 		defer runtime.Goexit()
 		chain.Database.Close()
 	})
+}
+
+// makeBasicHost creates a LibP2P host with a random peer ID listening on the
+// given multiaddress. It will use secio if secio is true.
+func makeBasicHost(listenPort int, secio bool, randseed int64) (host.Host, error) {
+	// If the seed is zero, use real cryptographic randomness. Otherwise, use a
+	// deterministic randomness source to make generated keys stay the same
+	// across multiple runs
+	var r io.Reader
+	if randseed == 0 {
+		r = rand.Reader
+	} else {
+		r = mrand.New(mrand.NewSource(randseed))
+	}
+
+	// Generate a key pair for this host. We will use it
+	// to obtain a valid host ID.
+	priv, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, r)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := []libp2p.Option{
+		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", listenPort)),
+		libp2p.Identity(priv),
+		libp2p.DisableRelay(),
+	}
+
+	return libp2p.New(context.Background(), opts...)
+}
+
+// request(cmd + payload)를 보냄
+func SendData(destPeerID string, data []byte) {
+	peerID, err := peer.Decode(destPeerID)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	// make a new stream from host B to host A
+	// it should be handled on host A by the handler we set above because
+	// we use the same /p2p/1.0.0 protocol
+	s, err := ha.NewStream(context.Background(), peerID, "/p2p/1.0.0")
+	if err != nil {
+		log.Printf("%s is not reachable\n", destPeerID)
+		log.Fatalln(err)
+		// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
+	}
+	defer s.Close()
+
+	_, err = s.Write(data)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+}
+
+func SendDataOnce(targetPeer string, data []byte) {
+	host, err := libp2p.New(context.Background())
+	if err != nil {
+		log.Panic(err)
+	}
+	ha = host
+
+	destPeerID := addAddrToPeerstore(host, targetPeer)
+	log.Printf("destPeerID: %s\n", destPeerID.Pretty())
+	SendData(peer.Encode(destPeerID), data)
+}
+
+func getHostAddress(_ha host.Host) string {
+	// Build host multiaddress
+	hostAddr, _ := ma.NewMultiaddr(fmt.Sprintf("/ipfs/%s", _ha.ID().Pretty()))
+
+	// Now we can build a full multiaddress to reach this host
+	// by encapsulating both addresses:
+	addr := _ha.Addrs()[0]
+	return addr.Encapsulate(hostAddr).String()
+}
+
+func getHostPeerId(_ha host.Host) string {
+	// Build host multiaddress
+	hostAddr, _ := ma.NewMultiaddr(fmt.Sprintf("/ipfs/%s", _ha.ID().Pretty()))
+	info, err := peer.AddrInfoFromP2pAddr(hostAddr)
+	if err != nil {
+		log.Panic(err)
+	}
+	return peer.Encode(info.ID)
+}
+
+func handleStream(s network.Stream) {
+	// Remember to close the stream when we are done.
+	defer s.Close()
+
+	log.Println("Got a new stream!")
+
+	// Create a buffer stream for non blocking read and write.
+	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
+
+	// connection 처리는 asynchronous하게 go routine으로 처리
+	go HandleP2PConnection(rw)
+
+	// stream 's' will stay open until you close it (or the other side closes it).
+}
+
+func StartHost(listenPort int, minter string, secio bool, randseed int64, targetPeer string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeId = fmt.Sprintf("%d", listenPort)
+	// minter의 주소를 global 변수에 저장.
+	minterAddress = minter
+
+	// Blockchain load
+	chain = blockchain.ContinueBlockChain(nodeId)
+	go CloseDB(chain) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
+	defer chain.Database.Close()
+
+	host, err := makeBasicHost(listenPort, secio, randseed)
+	if err != nil {
+		log.Panic(err)
+	}
+	ha = host
+	nodePeerId = getHostPeerId(ha)
+
+	if len(KnownNodes) == 0 {
+		// KnownNodes[0] 가 중앙 노드의 PeerId입니다.
+		KnownNodes = append(KnownNodes, nodePeerId)
+	}
+
+	if targetPeer == "" {
+		// Start listening server
+		runListener(ctx, ha, listenPort, secio)
+	} else {
+		// Connecting to listening server
+		runSender(ctx, ha, targetPeer)
+	}
+
+	// Wait forever
+	select {}
+}
+
+func runListener(ctx context.Context, ha host.Host, listenPort int, secio bool) {
+	fullAddr := getHostAddress(ha)
+	log.Printf("I am %s\n", fullAddr)
+
+	// Set a stream handler on host A. /p2p/1.0.0 is
+	// a user-defined protocol name.
+	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
+
+	log.Printf("Now run \"go run main.go startp2p -dest %s\" on a different terminal\n", fullAddr)
+}
+
+func runSender(ctx context.Context, ha host.Host, targetPeer string) {
+	fullAddr := getHostAddress(ha)
+	log.Printf("I am %s\n", fullAddr)
+
+	// Set a stream handler on host A. /p2p/1.0.0 is
+	// a user-defined protocol name.
+	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
+
+	destPeerID := addAddrToPeerstore(ha, targetPeer)
+	log.Printf("destPeerID: %s\n", destPeerID.Pretty())
+
+	SendVersion(peer.Encode(destPeerID), chain)
+}
+
+// addAddrToPeerstore parses a peer multiaddress and adds
+// it to the given host's peerstore, so it knows how to
+// contact it. It returns the peer ID of the remote peer.
+func addAddrToPeerstore(ha host.Host, addr string) peer.ID {
+	// The following code extracts target's peer ID from the
+	// given multiaddress
+	ipfsaddr, err := ma.NewMultiaddr(addr)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	info, err := peer.AddrInfoFromP2pAddr(ipfsaddr)
+
+	// We have a peer ID and a targetAddr so we add it to the peerstore
+	// so LibP2P knows how to contact it
+	ha.Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.PermanentAddrTTL)
+	return info.ID
 }
