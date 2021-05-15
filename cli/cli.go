@@ -303,7 +303,7 @@ func (cli *CommandLine) Run() {
 	}
 
 	if sendCmd.Parsed() {
-		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 || (*peerId == "" && *sendMint) {
+		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 || (!*sendMint && *peerId == "") {
 			sendCmd.Usage()
 			runtime.Goexit()
 		}

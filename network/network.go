@@ -477,7 +477,6 @@ func HandleP2PConnection(rw *bufio.ReadWriter) {
 	}
 
 	command := BytesToCmd(req[:commandLength])
-	log.Printf("Received %s command\n", command)
 
 	switch command {
 	case "addr":
@@ -623,8 +622,6 @@ func getHostPeerId(_ha host.Host) string {
 func handleStream(s network.Stream) {
 	// Remember to close the stream when we are done.
 	defer s.Close()
-
-	log.Println("Got a new stream!")
 
 	// Create a buffer stream for non blocking read and write.
 	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
