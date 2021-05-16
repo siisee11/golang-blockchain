@@ -46,7 +46,11 @@ func CreateBlock(txs []*Transaction, prevHash []byte, height int) *Block {
 
 // Genesis Block은 coinbase 트랜잭션을 인자로 받습니다.
 func Genesis(coinbase *Transaction) *Block {
-	return CreateBlock([]*Transaction{coinbase}, []byte{}, 0)
+	block := &Block{time.Now().Unix(), []byte{}, []*Transaction{coinbase}, []byte{}, 0, 0}
+	block.Hash = []byte("951125")
+	block.Nonce = 0
+
+	return block
 }
 
 // Util 함수

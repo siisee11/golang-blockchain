@@ -9,15 +9,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/dgraph-io/badger"
 )
 
 const (
-	dbPath = "./tmp/blocks_%s"
-	dbFile = "MANIFEST"
+	dbPath      = "./tmp/blocks_%s"
+	dbFile      = "MANIFEST"
+	genesisData = "Welcome to blockchain tutorial"
 )
 
 // DB를 가르키는 포인터를 저장해서 포인터를 통해 블록 관리
@@ -34,20 +34,15 @@ func DBexists(path string) bool {
 	return true
 }
 
-// Blockchain을 새로 만들어 반환하는 함수
-func InitBlockChain(address, nodeId string) *BlockChain {
+// Hardcode된 Genesis block 만을 가지는 Blockchain 반환
+func InitBlockChain(nodeId string) *BlockChain {
 	path := fmt.Sprintf(dbPath, nodeId)
 	var lastHash []byte
-
-	if DBexists(path) {
-		fmt.Println("Blockcahin already exists")
-		runtime.Goexit()
-	}
 
 	// File명을 통해 DB를 엽니다.
 	opts := badger.DefaultOptions(path)
 	// log 무시
-	opts.Logger = nil
+	//	opts.Logger = nil
 	db, err := openDB(path, opts)
 	Handle(err)
 
@@ -55,7 +50,8 @@ func InitBlockChain(address, nodeId string) *BlockChain {
 	// 수정사항(Genesis 생성)이 있기 때문에 Update함수를 사용합니다.
 	err = db.Update(func(txn *badger.Txn) error {
 		// coinbase 트랜잭션을 만들어서, 이를 통해 Genesis block을 만들어 저장합니다.
-		cbtx := CoinbaseTx(address, "")
+		cbtx := CoinbaseTx("burn", genesisData)
+		fmt.Println("CoinbaseTx created")
 		genesis := Genesis(cbtx)
 		fmt.Println("Genesis created")
 		err = txn.Set(genesis.Hash, genesis.Serialize())
@@ -66,7 +62,6 @@ func InitBlockChain(address, nodeId string) *BlockChain {
 
 		return err
 	})
-
 	Handle(err)
 
 	// 마지막 해시와 db pointer를 인자로하여 블록체인을 생성합니다.
@@ -74,35 +69,67 @@ func InitBlockChain(address, nodeId string) *BlockChain {
 	return &blockchain
 }
 
-// 이미 블록체인이 DB에 있으면 그 정보를 이용해서 *BlockChain을 반환합니다.
+// DB에서 블록체인 데이터를 찾아 *BlockChain을 반환합니다.
+// 없다면 Genesis 블록을 가지는 블록체인을 생성합니다.
 func ContinueBlockChain(nodeId string) *BlockChain {
 	path := fmt.Sprintf(dbPath, nodeId)
 	if !DBexists(path) {
-		fmt.Println("No existing blockchain found, create one!")
-		runtime.Goexit()
-	}
+		fmt.Println("There is no block, create new one")
+		var lastHash []byte
 
-	var lastHash []byte
-
-	// File명을 통해 DB를 엽니다.
-	opts := badger.DefaultOptions(path)
-	opts.Logger = nil
-	db, err := openDB(path, opts)
-	Handle(err)
-
-	// 값을 가져오는 것이므로 View를 사용합니다.
-	err = db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("lh"))
+		// File명을 통해 DB를 엽니다.
+		opts := badger.DefaultOptions(path)
+		// log 무시
+		//	opts.Logger = nil
+		db, err := openDB(path, opts)
 		Handle(err)
-		lastHash, err = item.ValueCopy(nil)
 
-		return err
-	})
-	Handle(err)
+		// db.Update는 Read/Write함수, View는 Read Only 함수입니다.
+		// 수정사항(Genesis 생성)이 있기 때문에 Update함수를 사용합니다.
+		err = db.Update(func(txn *badger.Txn) error {
+			// coinbase 트랜잭션을 만들어서, 이를 통해 Genesis block을 만들어 저장합니다.
+			// 아래 주소는 소각용 주소
+			cbtx := CoinbaseTx("1AjR9tbSpL61ACxedGMYL6YLqGjcy5fVfc", genesisData)
+			fmt.Println("CoinbaseTx created")
+			genesis := Genesis(cbtx)
+			fmt.Println("Genesis created")
+			err = txn.Set(genesis.Hash, genesis.Serialize())
+			Handle(err)
+			err = txn.Set([]byte("lh"), genesis.Hash)
 
-	chain := BlockChain{lastHash, db}
+			lastHash = genesis.Hash
 
-	return &chain
+			return err
+		})
+		Handle(err)
+
+		// 마지막 해시와 db pointer를 인자로하여 블록체인을 생성합니다.
+		chain := BlockChain{lastHash, db}
+
+		return &chain
+	} else {
+		var lastHash []byte
+
+		// File명을 통해 DB를 엽니다.
+		opts := badger.DefaultOptions(path)
+		opts.Logger = nil
+		db, err := openDB(path, opts)
+		Handle(err)
+
+		// 값을 가져오는 것이므로 View를 사용합니다.
+		err = db.View(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte("lh"))
+			Handle(err)
+			lastHash, err = item.ValueCopy(nil)
+
+			return err
+		})
+		Handle(err)
+
+		chain := BlockChain{lastHash, db}
+
+		return &chain
+	}
 }
 
 // {chain}에 {block}을 추가합니다.

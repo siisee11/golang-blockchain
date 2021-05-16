@@ -22,7 +22,6 @@ type CommandLine struct{}
 func (cli *CommandLine) printUsage() {
 	fmt.Println("Usage: <optional>")
 	fmt.Println(" getbalance -address ADDRESS - get the balance for address")
-	fmt.Println(" createblockchain -address ADDRESS - creates a blockchain(miner: ADDRESS)")
 	fmt.Println(" printchain - Prints the blocks in the chain")
 	fmt.Println(" send -from FROM -to TO -amount AMOUNT <-mint> - sends AMOUNT of coin from FROM to TO. Then -mint flag is set, mint off of this node")
 	fmt.Println(" createwallet <-alias> - Creates a new Wallet (with ALIAS)")
@@ -134,21 +133,6 @@ func (cli *CommandLine) printChain(nodeId string) {
 	}
 }
 
-func (cli *CommandLine) createBlockChain(alias, nodeId string) {
-	wallets, _ := wallet.CreateWallets(nodeId)
-	address := wallets.GetAddress(alias)
-	if !wallet.ValidateAddress(address) {
-		log.Panic("Address is not Valid")
-	}
-	chain := blockchain.InitBlockChain(address, nodeId)
-	defer chain.Database.Close()
-
-	UTXOset := blockchain.UTXOSet{Blockchain: chain}
-	UTXOset.Reindex()
-
-	fmt.Println("Finished!")
-}
-
 func (cli *CommandLine) getBalance(alias, nodeId string) {
 	wallets, _ := wallet.CreateWallets(nodeId)
 	address := wallets.GetAddress(alias)
@@ -222,7 +206,6 @@ func (cli *CommandLine) Run() {
 	startP2PCmd := flag.NewFlagSet("startp2p", flag.ExitOnError)
 	reIndexUtxoCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
-	createBlockchainCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
 	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
@@ -233,7 +216,6 @@ func (cli *CommandLine) Run() {
 	secio := startP2PCmd.Bool("secio", false, "P2P network security I/O")
 	startP2PMinter := startP2PCmd.String("minter", "", "Enable minting mode and send reward to minter")
 	getBalanceAddress := getBalanceCmd.String("address", "", "The address")
-	createBlockchainAddress := createBlockchainCmd.String("address", "", "Miner address")
 	sendFrom := sendCmd.String("from", "", "Source wallet address")
 	sendTo := sendCmd.String("to", "", "Dest wallet address")
 	peerId := sendCmd.String("peer", "", "Target Peer Id")
@@ -257,11 +239,7 @@ func (cli *CommandLine) Run() {
 		if err != nil {
 			log.Panic(err)
 		}
-	case "createblockchain":
-		err := createBlockchainCmd.Parse(os.Args[2:])
-		if err != nil {
-			log.Panic(err)
-		}
+
 	case "send":
 		err := sendCmd.Parse(os.Args[2:])
 		if err != nil {
@@ -302,14 +280,6 @@ func (cli *CommandLine) Run() {
 			runtime.Goexit()
 		}
 		cli.getBalance(*getBalanceAddress, nodeId)
-	}
-
-	if createBlockchainCmd.Parsed() {
-		if *createBlockchainAddress == "" {
-			createBlockchainCmd.Usage()
-			runtime.Goexit()
-		}
-		cli.createBlockChain(*createBlockchainAddress, nodeId)
 	}
 
 	if sendCmd.Parsed() {
