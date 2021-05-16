@@ -14,6 +14,7 @@ import (
 	mrand "math/rand"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 
 	"github.com/libp2p/go-libp2p"
@@ -21,6 +22,8 @@ import (
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
+	discovery "github.com/libp2p/go-libp2p-discovery"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/siisee11/golang-blockchain/blockchain"
@@ -629,7 +632,7 @@ func handleStream(s network.Stream) {
 }
 
 // Host를 시작합니다.
-func StartHost(listenPort int, minter string, secio bool, randseed int64, targetPeer string) {
+func StartHost(listenPort int, minter string, secio bool, randseed int64, rendezvous string, bootstrapPeers []ma.Multiaddr) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -658,43 +661,79 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, target
 		KnownNodes = append(KnownNodes, nodePeerId)
 	}
 
-	if targetPeer == "" {
-		// listen 합니다.
-		runListener(ctx, ha, listenPort, secio)
-	} else {
-		// listen하면서 listening하고 있는 서버에 접속합니다.
-		runSender(ctx, ha, targetPeer)
+	fullAddr := getHostAddress(ha)
+	log.Printf("I am %s\n", fullAddr)
+
+	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
+	log.Printf("Now run \"go run main.go startp2p -rendezvous %s\" on a different terminal\n", rendezvous)
+
+	// Start a DHT, for use in peer discovery. We can't just make a new DHT
+	// client because we want each peer to maintain its own local copy of the
+	// DHT, so that the bootstrapping node of the DHT can go down without
+	// inhibiting future peer discovery.
+	kademliaDHT, err := dht.New(ctx, host)
+	if err != nil {
+		panic(err)
+	}
+
+	// Bootstrap the DHT. In the default configuration, this spawns a Background
+	// thread that will refresh the peer table every five minutes.
+	log.Println("Bootstrapping the DHT")
+	if err = kademliaDHT.Bootstrap(ctx); err != nil {
+		panic(err)
+	}
+
+	// Let's connect to the bootstrap nodes first. They will tell us about the
+	// other nodes in the network.
+	var wg sync.WaitGroup
+	for _, peerAddr := range bootstrapPeers {
+		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := host.Connect(ctx, *peerinfo); err != nil {
+				log.Fatalln(err)
+			} else {
+				log.Println("Connection established with bootstrap node:", *peerinfo)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// We use a rendezvous point "meet me here" to announce our location.
+	// This is like telling your friends to meet you at the Eiffel Tower.
+	log.Println("Announcing ourselves...")
+	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
+	discovery.Advertise(ctx, routingDiscovery, rendezvous)
+	log.Println("Successfully announced!")
+
+	// Now, look for others who have announced
+	// This is like your friend telling you the location to meet you.
+	log.Println("Searching for other peers...")
+	peerChan, err := routingDiscovery.FindPeers(ctx, rendezvous)
+	if err != nil {
+		panic(err)
+	}
+
+	for p := range peerChan {
+		if p.ID == host.ID() {
+			continue
+		}
+		log.Println("Found peer:", p)
+
+		log.Println("Connecting to:", p)
+
+		// targetPeer를 ha의 Peerstore에 저장하고 destination의 peerId를 받아옵니다.
+		//		destPeerID := addAddrToPeerstore(ha, targetPeer)
+
+		// {destPeerID}에게 {chain}의 Version을 보냅니다.
+		SendVersion(peer.Encode(p.ID), chain)
+
+		log.Println("Connected to:", p)
 	}
 
 	// Wait forever
 	select {}
-}
-
-// listening server를 구동합니다. (중앙 서버)
-func runListener(ctx context.Context, ha host.Host, listenPort int, secio bool) {
-	fullAddr := getHostAddress(ha)
-	log.Printf("I am %s\n", fullAddr)
-
-	// StreamHandler를 Set합니다.
-	// {handleStream}은 stream을 받았을 때 불리는 핸들러 함수 입니다.
-	// /p2p/1.0.0은 user-defined protocal 입니다.
-	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
-
-	log.Printf("Now run \"go run main.go startp2p -dest %s\" on a different terminal\n", fullAddr)
-}
-
-// StreamHandler를 설정하고, {targetPeer}에게 Version 정보를 보냅니다.
-func runSender(ctx context.Context, ha host.Host, targetPeer string) {
-	fullAddr := getHostAddress(ha)
-	log.Printf("I am %s\n", fullAddr)
-
-	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
-
-	// targetPeer를 ha의 Peerstore에 저장하고 destination의 peerId를 받아옵니다.
-	destPeerID := addAddrToPeerstore(ha, targetPeer)
-
-	// {destPeerID}에게 {chain}의 Version을 보냅니다.
-	SendVersion(peer.Encode(destPeerID), chain)
 }
 
 // peer의 {addr}를 받아 multiaddress로 파싱한 후 host의 peerstore에 저장합니다.

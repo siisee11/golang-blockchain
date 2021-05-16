@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strconv"
 
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	maddr "github.com/multiformats/go-multiaddr"
 	"github.com/siisee11/golang-blockchain/blockchain"
 	"github.com/siisee11/golang-blockchain/network"
 	"github.com/siisee11/golang-blockchain/wallet"
@@ -26,7 +28,7 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println(" createwallet <-alias> - Creates a new Wallet (with ALIAS)")
 	fmt.Println(" listaddresses - Lists the addresses in our wallet file")
 	fmt.Println(" reindexutxo - Rebuilds the UTXO set")
-	fmt.Println(" startp2p <-dest ADDR> <-minter ADDRESS> - Start a p2p host with ID specified in NODE_ID env var.")
+	fmt.Println(" startp2p <-minter ADDRESS> <-rendezvous STRING> <-peer MADDR> - Start a p2p host with ID specified in NODE_ID env var.")
 }
 
 // Args(arguments)가 1개면 명령어를 입력하지 않은 것이므로 종료합니다.
@@ -44,7 +46,7 @@ func (cli *CommandLine) validateArgs() {
 // {minterAddress}가 있다면 이 서버는 minter로 동작하며
 // transaction을 모은 후 블록을 생성하여 {minterAddress}에 보상을 받습니다.
 // {dest}가 있다면 {dest}노드를 통해 p2p 네트워크에 접속합니다.
-func (cli *CommandLine) StartP2P(nodeId, minterAddress, dest string, secio bool) {
+func (cli *CommandLine) StartP2P(nodeId, minterAddress string, secio bool, randseed int64, rendezvous string, bootstrapPeersString string) {
 	fmt.Printf("Starting Host localhost:%s\n", nodeId)
 
 	wallets, _ := wallet.CreateWallets(nodeId)
@@ -63,7 +65,13 @@ func (cli *CommandLine) StartP2P(nodeId, minterAddress, dest string, secio bool)
 		log.Panic(err)
 	}
 
-	network.StartHost(port, minterAddress, secio, 0, dest)
+	var bootstrapPeers []maddr.Multiaddr
+
+	if bootstrapPeersString == "" {
+		bootstrapPeers = dht.DefaultBootstrapPeers
+	}
+
+	network.StartHost(port, minterAddress, secio, 0, rendezvous, bootstrapPeers)
 }
 
 // UTXOSet을 rebuild합니다.
@@ -220,7 +228,8 @@ func (cli *CommandLine) Run() {
 	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
 	listAddressesCmd := flag.NewFlagSet("listaddresses", flag.ExitOnError)
 
-	destHost := startP2PCmd.String("dest", "", "P2P network destination")
+	bootstrapPeersString := startP2PCmd.String("peer", "", "Adds a peer multiaddress to the bootstrap list")
+	rendezvous := startP2PCmd.String("rendezvous", "jy blockchain", "Unique string to identify group of nodes. Share this with your friends to let them connect with you")
 	secio := startP2PCmd.Bool("secio", false, "P2P network security I/O")
 	startP2PMinter := startP2PCmd.String("minter", "", "Enable minting mode and send reward to minter")
 	getBalanceAddress := getBalanceCmd.String("address", "", "The address")
@@ -280,7 +289,7 @@ func (cli *CommandLine) Run() {
 	}
 
 	if startP2PCmd.Parsed() {
-		cli.StartP2P(nodeId, *startP2PMinter, *destHost, *secio)
+		cli.StartP2P(nodeId, *startP2PMinter, *secio, 0, *rendezvous, *bootstrapPeersString)
 	}
 
 	if reIndexUtxoCmd.Parsed() {
