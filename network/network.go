@@ -41,6 +41,7 @@ const (
 var (
 	chain           *blockchain.BlockChain
 	ha              host.Host // 지금 노드의 host
+	nodeId          string    // 지금 노드의 nodeId
 	nodePeerId      string    // p2p에서 사용될 이 노드의 peerId
 	minterAddress   string    // minter의 주소
 	KnownNodes      = []string{}
@@ -570,7 +571,15 @@ func SendData(destPeerID string, data []byte) {
 	// 이 Stream은 {peerID}호스트의 steamHandler에 의해 처리될 것입니다.
 	s, err := ha.NewStream(context.Background(), peerID, "/p2p/1.0.0")
 	if err != nil {
-		log.Printf("%s is not reachable\n", destPeerID)
+		log.Printf("%s is not reachable\n", peerID)
+
+		peers, err := CreatePeers(nodeId)
+		if err != nil {
+			log.Println(err)
+		}
+		delete(peers.Peers, peerID)
+		peers.SaveFile(nodeId)
+
 		// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
 		var updatedPeers []string
 
@@ -640,10 +649,20 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	minterAddress = minter
 
 	// {listenPort}가 nodeId로 쓰이게됩니다.
-	nodeId := fmt.Sprintf("%d", listenPort)
+	nodeId = fmt.Sprintf("%d", listenPort)
 	chain = blockchain.ContinueBlockChain(nodeId)
 	go CloseDB(chain) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
 	defer chain.Database.Close()
+
+	// 저장되어 있는 peer들을 불러옵니다.
+	peers, err := CreatePeers(nodeId)
+	if err != nil {
+		log.Println(err)
+	}
+	peerIds := peers.GetAllPeerIds()
+	for _, peerId := range peerIds {
+		fmt.Printf("%s => %s\n", peerId, peers.GetAddr(peerId))
+	}
 
 	// p2p host를 만듭니다.
 	host, err := makeBasicHost(listenPort, secio, randseed)
@@ -665,7 +684,6 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	log.Printf("I am %s\n", fullAddr)
 
 	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
-	log.Printf("Now run \"go run main.go startp2p -rendezvous %s\" on a different terminal\n", rendezvous)
 
 	// Start a DHT, for use in peer discovery. We can't just make a new DHT
 	// client because we want each peer to maintain its own local copy of the
@@ -710,6 +728,8 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	// Now, look for others who have announced
 	// This is like your friend telling you the location to meet you.
 	log.Println("Searching for other peers...")
+	log.Printf("Now run \"go run main.go startp2p -rendezvous %s\" on a different terminal\n", rendezvous)
+
 	peerChan, err := routingDiscovery.FindPeers(ctx, rendezvous)
 	if err != nil {
 		panic(err)
@@ -719,17 +739,16 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 		if p.ID == host.ID() {
 			continue
 		}
-		log.Println("Found peer:", p)
-
 		log.Println("Connecting to:", p)
 
-		// targetPeer를 ha의 Peerstore에 저장하고 destination의 peerId를 받아옵니다.
-		//		destPeerID := addAddrToPeerstore(ha, targetPeer)
+		peers.AddPeer(p)
+		peers.SaveFile(nodeId)
 
 		// {destPeerID}에게 {chain}의 Version을 보냅니다.
 		SendVersion(peer.Encode(p.ID), chain)
 
 		log.Println("Connected to:", p)
+
 	}
 
 	// Wait forever

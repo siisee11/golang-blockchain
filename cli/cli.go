@@ -158,7 +158,7 @@ func (cli *CommandLine) getBalance(alias, nodeId string) {
 
 // {from}에서 {to}로 {amount}만큼 보냅니다.
 // {mintNow}가 true이면 send트랜잭션을 담은 블록을 생성하고
-// {mintNow}가 false이면 트랜잭션을 만들어 중앙 노드(targetPeer)에게 보냅니다.
+// {mintNow}가 false이면 트랜잭션을 만들어 Known Peer에게 보냅니다.
 func (cli *CommandLine) send(alias, to, targetPeer string, amount int, nodeId string, mintNow bool) {
 	wallets, _ := wallet.CreateWallets(nodeId)
 	from := wallets.GetAddress(alias)
