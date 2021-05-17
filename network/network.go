@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/dgraph-io/badger"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
@@ -39,13 +40,13 @@ const (
 )
 
 var (
-	chain           *blockchain.BlockChain
+	Chain           *blockchain.BlockChain
 	peers           *Peers
 	ha              host.Host // 지금 노드의 host
-	nodeId          string    // 지금 노드의 nodeId
+	NodeId          string    // 지금 노드의 nodeId
 	nodePeerId      string    // p2p에서 사용될 이 노드의 peerId
 	minterAddress   string    // minter의 주소
-	KnownNodes      = []string{}
+	KnownPeers      = []string{}
 	blocksInTransit = [][]byte{}
 	memoryPool      = make(map[string]blockchain.Transaction) // txID => Transaction
 )
@@ -120,9 +121,9 @@ func BytesToCmd(bytes []byte) string {
 	return fmt.Sprintf("%s", cmd)
 }
 
-// KnownNodes들에게 블록을 달라고 요청
+// KnownPeers들에게 블록을 달라고 요청
 func RequestBlocks() {
-	for _, node := range KnownNodes {
+	for _, node := range KnownPeers {
 		SendGetBlocks(node)
 	}
 }
@@ -132,9 +133,9 @@ func ExtractCmd(request []byte) []byte {
 	return request[:commandLength]
 }
 
-// KnownNodes에 자신의 address를 더해서 {addr}에게 addr 커맨드를 보냄
+// KnownPeers에 자신의 address를 더해서 {addr}에게 addr 커맨드를 보냄
 func SendAddr(addr string) {
-	nodes := Addr{KnownNodes}
+	nodes := Addr{KnownPeers}
 	nodes.AddrList = append(nodes.AddrList, nodePeerId)
 	payload := GobEncode(nodes)
 	request := append(CmdToBytes("addr"), payload...)
@@ -220,9 +221,9 @@ func HandleAddr(request []byte) {
 		log.Panic(err)
 	}
 
-	// 받은 주소들을 KnownNodes에 추가합니다.
-	KnownNodes = append(KnownNodes, payload.AddrList...)
-	fmt.Printf("there are %d known nodes\n", len(KnownNodes))
+	// 받은 주소들을 KnownPeers에 추가합니다.
+	KnownPeers = append(KnownPeers, payload.AddrList...)
+	fmt.Printf("there are %d known nodes\n", len(KnownPeers))
 
 	// Block을 요청함.
 	RequestBlocks()
@@ -340,7 +341,7 @@ func HandleVersion(request []byte, chain *blockchain.BlockChain) {
 	}
 
 	if !NodeIsKnown(payload.AddrFrom) {
-		KnownNodes = append(KnownNodes, payload.AddrFrom)
+		KnownPeers = append(KnownPeers, payload.AddrFrom)
 	}
 }
 
@@ -364,8 +365,8 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 
 	log.Printf("%s received Tx, now %d txs in memoryPool\n", nodePeerId, len(memoryPool))
 
-	// KnownNodes 들에게 {tx}을 보낸다.
-	for _, node := range KnownNodes {
+	// KnownPeers 들에게 {tx}을 보낸다.
+	for _, node := range KnownPeers {
 		// 현재노드 {nodePeerId}가 아니고 {tx}를 전달받은 노드가 아니면
 		if node != nodePeerId && node != payload.AddrFrom {
 			// 받은 tx의 ID 전송
@@ -424,7 +425,7 @@ func HandleInv(request []byte, chain *blockchain.BlockChain) {
 	}
 }
 
-// Block을 채굴하여 트랜잭션을 기록 후 새로운 블록을 KnownNodes에게 알림.
+// Block을 채굴하여 트랜잭션을 기록 후 새로운 블록을 KnownPeers에게 알림.
 func MintTx(chain *blockchain.BlockChain) {
 	var txs []*blockchain.Transaction
 
@@ -461,8 +462,8 @@ func MintTx(chain *blockchain.BlockChain) {
 		delete(memoryPool, txID)
 	}
 
-	// KnownNodes들에게 새로운 block을 전송합니다.
-	for _, node := range KnownNodes {
+	// KnownPeers들에게 새로운 block을 전송합니다.
+	for _, node := range KnownPeers {
 		if node != nodePeerId {
 			SendInv(node, "block", [][]byte{newBlock.Hash})
 		}
@@ -487,17 +488,17 @@ func HandleP2PConnection(rw *bufio.ReadWriter) {
 	case "addr":
 		HandleAddr(req)
 	case "block":
-		HandleBlock(req, chain)
+		HandleBlock(req, Chain)
 	case "inv":
-		HandleInv(req, chain)
+		HandleInv(req, Chain)
 	case "getblocks":
-		HandleGetBlock(req, chain)
+		HandleGetBlock(req, Chain)
 	case "getdata":
-		HandleGetData(req, chain)
+		HandleGetData(req, Chain)
 	case "tx":
-		HandleTx(req, chain)
+		HandleTx(req, Chain)
 	case "version":
-		HandleVersion(req, chain)
+		HandleVersion(req, Chain)
 	default:
 		fmt.Println("Unknown command")
 	}
@@ -516,9 +517,9 @@ func GobEncode(data interface{}) []byte {
 	return buff.Bytes()
 }
 
-// {addr}가 KnownNodes에 속해있으면 true
+// {addr}가 KnownPeers에 속해있으면 true
 func NodeIsKnown(addr string) bool {
-	for _, node := range KnownNodes {
+	for _, node := range KnownPeers {
 		if node == addr {
 			return true
 		}
@@ -527,14 +528,14 @@ func NodeIsKnown(addr string) bool {
 }
 
 // 안전한 DB close
-func CloseDB(chain *blockchain.BlockChain) {
+func CloseDB(db *badger.DB) {
 	// SIGINT, SIGTERM : unix, linux / Interrupt : window
 	d := DEATH.NewDeath(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 
 	d.WaitForDeathWithFunc(func() {
 		defer os.Exit(1)
 		defer runtime.Goexit()
-		chain.Database.Close()
+		db.Close()
 	})
 }
 
@@ -582,17 +583,17 @@ func SendData(destPeerID string, data []byte) {
 		peers.DeletePeer(peerID)
 		log.Printf("%s deleted\n", peerID)
 
-		// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
+		// TODO: 통신이 되지 않는 {peer}를 KnownPeers에서 삭제합니다.
 		var updatedPeers []string
 
-		// 통신이 되지 않는 {addr}를 KnownNodes에서 삭제합니다.
-		for _, node := range KnownNodes {
+		// 통신이 되지 않는 {addr}를 KnownPeers에서 삭제합니다.
+		for _, node := range KnownPeers {
 			if node != destPeerID {
 				updatedPeers = append(updatedPeers, node)
 			}
 		}
 
-		KnownNodes = updatedPeers
+		KnownPeers = updatedPeers
 
 		return
 	}
@@ -642,95 +643,53 @@ func handleStream(s network.Stream) {
 	go HandleP2PConnection(rw)
 }
 
-// Host를 시작합니다.
-func StartHost(listenPort int, minter string, secio bool, randseed int64, rendezvous string, bootstrapPeers []ma.Multiaddr) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// minter의 주소를 global 변수에 저장.
-	minterAddress = minter
-
-	// {listenPort}가 nodeId로 쓰이게됩니다.
-	nodeId = fmt.Sprintf("%d", listenPort)
-	chain = blockchain.ContinueBlockChain(nodeId)
-	go CloseDB(chain) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
-	defer chain.Database.Close()
-
-	// 저장되어 있는 peer들을 불러옵니다.
-	peers, err := GetPeerDB(nodeId)
-	if err != nil {
-		log.Println(err)
-	}
+func connectToKnownPeer(host host.Host, peers *Peers) bool {
 	// 저장되어 있는 peer들을 출력합니다.
 	peerAddrInfos := peers.FindAllAddrInfo()
+	log.Println("\033[1;36mIn peers DB:\033[0m")
 	for _, peerAddrInfo := range peerAddrInfos {
 		fmt.Printf("%s\n", peerAddrInfo)
 	}
 
-	// p2p host를 만듭니다.
-	host, err := makeBasicHost(listenPort, secio, randseed)
-	if err != nil {
-		log.Panic(err)
-	}
-	// {host}를 전역변수 {ha}에 저장합니다.
-	ha = host
-	// {nodePeerId}: 이 노드의 peer ID 입니다.
-	// 통신에 Peer Id 가 사용됩니다.
-	nodePeerId = peer.Encode(host.ID())
-
-	if len(KnownNodes) == 0 {
-		// KnownNodes[0]는 자기 자신입니다.
-		KnownNodes = append(KnownNodes, nodePeerId)
-	}
-
-	fullAddr := getHostAddress(ha)
-	log.Printf("I am %s\n", fullAddr)
-
-	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
-
 	// 먼저 저장되어 있는 peer들에게 연결합니다.
 	for _, peerinfo := range peerAddrInfos {
-
-		log.Printf("peerinfo %s\n", peerinfo)
-		if err != nil {
-			log.Panic(err)
-		}
-
-		// {ha} => {peerID} 의 Stream을 만듭니다.
+		// {host} => {peerID} 의 Stream을 만듭니다.
 		// 이 Stream은 {peerID}호스트의 steamHandler에 의해 처리될 것입니다.
-		s, err := ha.NewStream(context.Background(), peerinfo.ID, "/p2p/1.0.0")
+		s, err := host.NewStream(context.Background(), peerinfo.ID, "/p2p/1.0.0")
 		if err != nil {
 			log.Printf("%s is \033[1;33mnot reachable\033[0m\n", peerinfo.ID)
 
 			peers.DeletePeer(peerinfo.ID)
 			log.Printf("%s => %s deleted\n", peerinfo.ID, peerinfo.Addrs)
 
-			// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
+			// TODO: 통신이 되지 않는 {peer}를 KnownPeers에서 삭제합니다.
 			var updatedPeers []string
 
-			// 통신이 되지 않는 {addr}를 KnownNodes에서 삭제합니다.
-			for _, node := range KnownNodes {
+			// 통신이 되지 않는 {addr}를 KnownPeers에서 삭제합니다.
+			for _, node := range KnownPeers {
 				if node != peer.Encode(peerinfo.ID) {
 					updatedPeers = append(updatedPeers, node)
 				}
 			}
 
-			KnownNodes = updatedPeers
+			KnownPeers = updatedPeers
+		} else {
+			// 연결되었으면 Version 메세지를 보낸다.
+			SendVersion(peer.Encode(peerinfo.ID), Chain)
+			s.Close()
+			return true
 		}
-		s.Close()
 	}
 
-	// Start a DHT, for use in peer discovery. We can't just make a new DHT
-	// client because we want each peer to maintain its own local copy of the
-	// DHT, so that the bootstrapping node of the DHT can go down without
-	// inhibiting future peer discovery.
+	return false
+}
+
+func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous string, bootstrapPeers []ma.Multiaddr) {
 	kademliaDHT, err := dht.New(ctx, host)
 	if err != nil {
 		panic(err)
 	}
 
-	// Bootstrap the DHT. In the default configuration, this spawns a Background
-	// thread that will refresh the peer table every five minutes.
 	log.Println("Bootstrapping the DHT")
 	if err = kademliaDHT.Bootstrap(ctx); err != nil {
 		panic(err)
@@ -753,15 +712,10 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	}
 	wg.Wait()
 
-	// We use a rendezvous point "meet me here" to announce our location.
-	// This is like telling your friends to meet you at the Eiffel Tower.
 	log.Println("Announcing ourselves...")
 	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
 	discovery.Advertise(ctx, routingDiscovery, rendezvous)
 	log.Println("Successfully announced!")
-
-	// Now, look for others who have announced
-	// This is like your friend telling you the location to meet you.
 	log.Println("Searching for other peers...")
 	log.Printf("Now run \"go run main.go startp2p -rendezvous %s\" on a different terminal\n", rendezvous)
 
@@ -774,27 +728,81 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 		if p.ID == host.ID() {
 			continue
 		}
-		log.Println("Connecting to:", p)
 
 		if len(p.Addrs) > 0 {
+			log.Println("\033[1;36mConnecting to:\033[0m", p)
 			peers.AddPeer(p)
 
-			_, err := ha.NewStream(context.Background(), p.ID, "/p2p/1.0.0")
+			s, err := ha.NewStream(context.Background(), p.ID, "/p2p/1.0.0")
 			if err != nil {
 				log.Printf("%s is \033[1;33mnot reachable\033[0m\n", p.ID)
 
 				peers.DeletePeer(p.ID)
-				log.Printf("%s => %s deleted\n", p.ID, p.Addrs)
+				log.Printf("%s => %s \033[1;33mdeleted\033[0m\n", p.ID, p.Addrs)
 			} else {
-				// {destPeerID}에게 {chain}의 Version을 보냅니다.
-				SendVersion(peer.Encode(p.ID), chain)
+				// {destPeerID}에게 {Chain}의 Version을 보냅니다.
+				SendVersion(peer.Encode(p.ID), Chain)
+				defer s.Close()
 			}
 
 		} else {
 			// invalid peer
 			peers.DeletePeer(p.ID)
-			log.Println("\033[0;36mNo route to :\033[0m", p)
+			log.Println("\033[1;31mINVAILD ADDR\033[0m", p)
 		}
+	}
+}
+
+// Host를 시작합니다.
+func StartHost(listenPort int, minter string, secio bool, randseed int64, rendezvous string, bootstrapPeers []ma.Multiaddr) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// minter의 주소를 global 변수에 저장.
+	minterAddress = minter
+
+	// {listenPort}가 nodeId로 쓰이게됩니다.
+	NodeId = fmt.Sprintf("%d", listenPort)
+	// chain을 전역변수에 저장
+	Chain = blockchain.ContinueBlockChain(NodeId)
+	go CloseDB(Chain.Database) // 하드웨어 인터럽트를 대기하고 있다가 안전하게 DB를 닫는 함수
+	defer Chain.Database.Close()
+
+	// P2P host를 만듭니다.
+	host, err := makeBasicHost(listenPort, secio, randseed)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	// {host}를 전역변수 {ha}에 저장합니다.
+	ha = host
+	// {nodePeerId}: 이 노드의 peer ID 입니다.
+	// 통신에 Peer Id 가 사용됩니다.
+	nodePeerId = peer.Encode(host.ID())
+
+	if len(KnownPeers) == 0 {
+		// KnownPeers[0]는 자기 자신입니다.
+		KnownPeers = append(KnownPeers, nodePeerId)
+	}
+
+	fullAddr := getHostAddress(ha)
+	log.Printf("I am %s\n", fullAddr)
+
+	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
+
+	// 저장되어 있는 peer들을 불러옵니다.
+	peers, err := GetPeerDB(NodeId)
+	if err != nil {
+		log.Println(err)
+	}
+	go CloseDB(peers.Database)
+	defer peers.Database.Close()
+
+	// 저장되어 있는 피어에 우선 접속해봅니다.
+	connected := connectToKnownPeer(host, peers)
+	// 저장되어 있는 피어와 연결되지 않았다면
+	if !connected {
+		peerDiscovery(ctx, host, peers, rendezvous, bootstrapPeers)
 	}
 
 	// Wait forever

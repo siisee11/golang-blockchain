@@ -66,12 +66,10 @@ func (pa *Peers) AddPeer(info peer.AddrInfo) {
 
 // Peers에서 {pid}정보를 삭제합니다..
 func (pa *Peers) DeletePeer(pid peer.ID) {
-	fmt.Println(peer.Encode(pid))
 	err := pa.Database.Update(func(txn *badger.Txn) error {
 		if err := txn.Delete([]byte(pid)); err != nil {
 			return err
 		}
-
 		return nil
 	})
 	if err != nil {
@@ -91,9 +89,12 @@ func (pa Peers) FindAllAddrInfo() []peer.AddrInfo {
 
 		for it.Rewind(); it.Valid(); it.Next() {
 			item := it.Item()
-			k := item.Key()
+			//			k := item.Key()
 			err := item.Value(func(v []byte) error {
-				fmt.Printf("key=%s, value=%s\n", k, v)
+				tmp := peer.AddrInfo{}
+				tmp.UnmarshalJSON(v)
+				log.Println(tmp)
+				addrInfos = append(addrInfos, tmp)
 				return nil
 			})
 			if err != nil {
