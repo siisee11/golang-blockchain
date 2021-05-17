@@ -24,6 +24,7 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println(" getbalance -address ADDRESS - get the balance for address")
 	fmt.Println(" printchain - Prints the blocks in the chain")
 	fmt.Println(" send -from FROM -to TO -amount AMOUNT <-mint> - sends AMOUNT of coin from FROM to TO. Then -mint flag is set, mint off of this node")
+	fmt.Println(" mint -minter ADDRESS - Mint new block and get rewards")
 	fmt.Println(" createwallet <-alias> - Creates a new Wallet (with ALIAS)")
 	fmt.Println(" listaddresses - Lists the addresses in our wallet file")
 	fmt.Println(" reindexutxo - Rebuilds the UTXO set")
@@ -192,6 +193,30 @@ func (cli *CommandLine) send(alias, to, targetPeer string, amount int, nodeId st
 	fmt.Println("Success!")
 }
 
+// {mintNow}가 false이면 트랜잭션을 만들어 Known Peer에게 보냅니다.
+func (cli *CommandLine) mint(to string, nodeId string) {
+	wallets, _ := wallet.CreateWallets(nodeId)
+	to = wallets.GetAddress(to)
+	if !wallet.ValidateAddress(to) {
+		log.Panic("Address is not Valid")
+	}
+	chain := blockchain.ContinueBlockChain(nodeId) // blockchain을 DB로 부터 받아온다.
+	UTXOset := blockchain.UTXOSet{Blockchain: chain}
+	defer chain.Database.Close()
+
+	wallets, err := wallet.CreateWallets(nodeId)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	cbTx := blockchain.CoinbaseTx(to, "") // 코인베이스 트랜잭션을 생성하고
+	txs := []*blockchain.Transaction{cbTx}
+	block := chain.MintBlock(txs)
+	UTXOset.Update(block)
+
+	fmt.Println("Success!")
+}
+
 func (cli *CommandLine) Run() {
 	cli.validateArgs()
 
@@ -207,6 +232,7 @@ func (cli *CommandLine) Run() {
 	reIndexUtxoCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
+	mintCmd := flag.NewFlagSet("mint", flag.ExitOnError)
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
 	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
 	listAddressesCmd := flag.NewFlagSet("listaddresses", flag.ExitOnError)
@@ -221,6 +247,7 @@ func (cli *CommandLine) Run() {
 	peerId := sendCmd.String("peer", "", "Target Peer Id")
 	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
 	sendMint := sendCmd.Bool("mint", false, "Mine immediately on the same node")
+	mintTo := mintCmd.String("minter", "", "Minter")
 	createWalletAlias := createWalletCmd.String("alias", "", "Name wallet")
 
 	switch os.Args[1] {
@@ -242,6 +269,11 @@ func (cli *CommandLine) Run() {
 
 	case "send":
 		err := sendCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "mint":
+		err := mintCmd.Parse(os.Args[2:])
 		if err != nil {
 			log.Panic(err)
 		}
@@ -288,6 +320,14 @@ func (cli *CommandLine) Run() {
 			runtime.Goexit()
 		}
 		cli.send(*sendFrom, *sendTo, *peerId, *sendAmount, nodeId, *sendMint)
+	}
+
+	if mintCmd.Parsed() {
+		if *mintTo == "" {
+			mintCmd.Usage()
+			runtime.Goexit()
+		}
+		cli.mint(*mintTo, nodeId)
 	}
 
 	if printChainCmd.Parsed() {

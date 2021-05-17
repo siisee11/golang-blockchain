@@ -1,96 +1,135 @@
 package network
 
 import (
-	"bytes"
-	"crypto/elliptic"
-	"encoding/gob"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/dgraph-io/badger"
 	"github.com/libp2p/go-libp2p-core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
-const peerFile = "./tmp/peers_%s.data"
+const (
+	peerDBPath = "./tmp/peers_%s"
+	peerDBFile = "MANIFEST"
+)
 
 type Peers struct {
-	Peers map[peer.ID][]ma.Multiaddr
+	//	Peers map[peer.ID][]ma.Multiaddr
+	Database *badger.DB
+}
+
+func PeerDBexist(path string) bool {
+	if _, err := os.Stat(path + "/" + peerDBFile); os.IsNotExist(err) {
+		return false
+	}
+	return true
 }
 
 // Peers를 만듭니다.
-func CreatePeers(nodeId string) (*Peers, error) {
-	peers := Peers{}
-	peers.Peers = make(map[peer.ID][]ma.Multiaddr)
+func GetPeerDB(nodeId string) (*Peers, error) {
+	path := fmt.Sprintf(peerDBPath, nodeId)
 
-	// 파일에 저장된 peers를 불러옵니다.
-	err := peers.LoadFile(nodeId)
+	// File명을 통해 DB를 엽니다.
+	opts := badger.DefaultOptions(path)
+	// log 무시
+	//	opts.Logger = nil
+	db, err := openDB(path, opts)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	peers := Peers{db}
 
 	return &peers, err
 }
 
 // Peers에 정보를 추가합니다.
+// []byte(peer.ID) => peer.AddrInfo
 func (pa *Peers) AddPeer(info peer.AddrInfo) {
-	pa.Peers[info.ID] = info.Addrs
-}
+	err := pa.Database.Update(func(txn *badger.Txn) error {
+		if _, err := txn.Get([]byte(info.ID)); err == nil {
+			return nil
+		}
 
-func (pa Peers) GetAddr(pid peer.ID) []ma.Multiaddr {
-	return pa.Peers[pid]
-}
+		infoData, _ := info.MarshalJSON()
+		err := txn.Set([]byte(info.ID), infoData)
 
-// Peers에 저장된 모든 PeerId값을 반환합니다.
-func (pa Peers) GetAllPeerIds() []peer.ID {
-	var peerIds []peer.ID
-
-	for peerId := range pa.Peers {
-		peerIds = append(peerIds, peerId)
-	}
-
-	return peerIds
-}
-
-// 파일에 저장된 Peers를 읽어오는 함수
-func (pa *Peers) LoadFile(nodeId string) error {
-	peerFile := fmt.Sprintf(peerFile, nodeId)
-	if _, err := os.Stat(peerFile); os.IsNotExist(err) {
 		return err
-	}
-
-	var peeraddrs Peers
-
-	fileConent, err := ioutil.ReadFile(peerFile)
-	if err != nil {
-		return err
-	}
-
-	gob.Register(elliptic.P256())
-	decoder := gob.NewDecoder(bytes.NewReader(fileConent))
-	err = decoder.Decode(&peeraddrs)
-	if err != nil {
-		return err
-	}
-
-	pa.Peers = peeraddrs.Peers
-
-	return nil
-}
-
-// Peers을 파일에 저장하는 함수
-func (pa *Peers) SaveFile(nodeId string) {
-	var content bytes.Buffer
-	peerFile := fmt.Sprintf(peerFile, nodeId)
-
-	gob.Register(elliptic.P256())
-
-	encoder := gob.NewEncoder(&content)
-	err := encoder.Encode(pa)
+	})
 	if err != nil {
 		log.Panic(err)
 	}
+}
 
-	err = ioutil.WriteFile(peerFile, content.Bytes(), 0644)
+// Peers에서 {pid}정보를 삭제합니다..
+func (pa *Peers) DeletePeer(pid peer.ID) {
+	fmt.Println(peer.Encode(pid))
+	err := pa.Database.Update(func(txn *badger.Txn) error {
+		if err := txn.Delete([]byte(pid)); err != nil {
+			return err
+		}
+
+		return nil
+	})
 	if err != nil {
 		log.Panic(err)
+	}
+}
+
+func (pa Peers) FindAllAddrInfo() []peer.AddrInfo {
+	db := pa.Database
+	var addrInfos []peer.AddrInfo
+
+	err := db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			err := item.Value(func(v []byte) error {
+				fmt.Printf("key=%s, value=%s\n", k, v)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+	return addrInfos
+}
+
+func retry(dir string, originalOpts badger.Options) (*badger.DB, error) {
+	lockPath := filepath.Join(dir, "LOCK")
+	if err := os.Remove(lockPath); err != nil {
+		return nil, fmt.Errorf(`removing "LOCK": %s`, err)
+	}
+	retryOpts := originalOpts
+	retryOpts.Truncate = true
+	db, err := badger.Open(retryOpts)
+	return db, err
+}
+
+func openDB(dir string, opts badger.Options) (*badger.DB, error) {
+	if db, err := badger.Open(opts); err != nil {
+		if strings.Contains(err.Error(), "LOCK") {
+			if db, err := retry(dir, opts); err == nil {
+				log.Println("database unlocked, value log truncated")
+				return db, nil
+			}
+			log.Println("could not unlock database:", err)
+		}
+		return nil, err
+	} else {
+		return db, nil
 	}
 }

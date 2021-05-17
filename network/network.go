@@ -40,6 +40,7 @@ const (
 
 var (
 	chain           *blockchain.BlockChain
+	peers           *Peers
 	ha              host.Host // 지금 노드의 host
 	nodeId          string    // 지금 노드의 nodeId
 	nodePeerId      string    // p2p에서 사용될 이 노드의 peerId
@@ -47,6 +48,14 @@ var (
 	KnownNodes      = []string{}
 	blocksInTransit = [][]byte{}
 	memoryPool      = make(map[string]blockchain.Transaction) // txID => Transaction
+)
+
+const (
+	InfoColor    = "\033[1;34m%s\033[0m"
+	NoticeColor  = "\033[1;36m%s\033[0m"
+	WarningColor = "\033[1;33m%s\033[0m"
+	ErrorColor   = "\033[1;31m%s\033[0m"
+	DebugColor   = "\033[0;36m%s\033[0m"
 )
 
 // 아래는 통신을 위한 구조들.
@@ -355,15 +364,12 @@ func HandleTx(request []byte, chain *blockchain.BlockChain) {
 
 	log.Printf("%s received Tx, now %d txs in memoryPool\n", nodePeerId, len(memoryPool))
 
-	// 중앙 노드이면
-	if nodePeerId == KnownNodes[0] {
-		// KnownNodes 들에게 {tx}을 보낸다.
-		for _, node := range KnownNodes {
-			// 현재노드 {nodePeerId}가 아니고 {tx}를 전달받은 노드가 아니면
-			if node != nodePeerId && node != payload.AddrFrom {
-				// 받은 tx의 ID 전송
-				SendInv(node, "tx", [][]byte{tx.ID})
-			}
+	// KnownNodes 들에게 {tx}을 보낸다.
+	for _, node := range KnownNodes {
+		// 현재노드 {nodePeerId}가 아니고 {tx}를 전달받은 노드가 아니면
+		if node != nodePeerId && node != payload.AddrFrom {
+			// 받은 tx의 ID 전송
+			SendInv(node, "tx", [][]byte{tx.ID})
 		}
 	}
 
@@ -571,14 +577,10 @@ func SendData(destPeerID string, data []byte) {
 	// 이 Stream은 {peerID}호스트의 steamHandler에 의해 처리될 것입니다.
 	s, err := ha.NewStream(context.Background(), peerID, "/p2p/1.0.0")
 	if err != nil {
-		log.Printf("%s is not reachable\n", peerID)
+		log.Printf("%s is \033[1;33mnot reachable\033[0m\n", peerID)
 
-		peers, err := CreatePeers(nodeId)
-		if err != nil {
-			log.Println(err)
-		}
-		delete(peers.Peers, peerID)
-		peers.SaveFile(nodeId)
+		peers.DeletePeer(peerID)
+		log.Printf("%s deleted\n", peerID)
 
 		// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
 		var updatedPeers []string
@@ -655,13 +657,14 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	defer chain.Database.Close()
 
 	// 저장되어 있는 peer들을 불러옵니다.
-	peers, err := CreatePeers(nodeId)
+	peers, err := GetPeerDB(nodeId)
 	if err != nil {
 		log.Println(err)
 	}
-	peerIds := peers.GetAllPeerIds()
-	for _, peerId := range peerIds {
-		fmt.Printf("%s => %s\n", peerId, peers.GetAddr(peerId))
+	// 저장되어 있는 peer들을 출력합니다.
+	peerAddrInfos := peers.FindAllAddrInfo()
+	for _, peerAddrInfo := range peerAddrInfos {
+		fmt.Printf("%s\n", peerAddrInfo)
 	}
 
 	// p2p host를 만듭니다.
@@ -684,6 +687,38 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	log.Printf("I am %s\n", fullAddr)
 
 	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
+
+	// 먼저 저장되어 있는 peer들에게 연결합니다.
+	for _, peerinfo := range peerAddrInfos {
+
+		log.Printf("peerinfo %s\n", peerinfo)
+		if err != nil {
+			log.Panic(err)
+		}
+
+		// {ha} => {peerID} 의 Stream을 만듭니다.
+		// 이 Stream은 {peerID}호스트의 steamHandler에 의해 처리될 것입니다.
+		s, err := ha.NewStream(context.Background(), peerinfo.ID, "/p2p/1.0.0")
+		if err != nil {
+			log.Printf("%s is \033[1;33mnot reachable\033[0m\n", peerinfo.ID)
+
+			peers.DeletePeer(peerinfo.ID)
+			log.Printf("%s => %s deleted\n", peerinfo.ID, peerinfo.Addrs)
+
+			// TODO: 통신이 되지 않는 {peer}를 KnownNodes에서 삭제합니다.
+			var updatedPeers []string
+
+			// 통신이 되지 않는 {addr}를 KnownNodes에서 삭제합니다.
+			for _, node := range KnownNodes {
+				if node != peer.Encode(peerinfo.ID) {
+					updatedPeers = append(updatedPeers, node)
+				}
+			}
+
+			KnownNodes = updatedPeers
+		}
+		s.Close()
+	}
 
 	// Start a DHT, for use in peer discovery. We can't just make a new DHT
 	// client because we want each peer to maintain its own local copy of the
@@ -741,14 +776,25 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 		}
 		log.Println("Connecting to:", p)
 
-		peers.AddPeer(p)
-		peers.SaveFile(nodeId)
+		if len(p.Addrs) > 0 {
+			peers.AddPeer(p)
 
-		// {destPeerID}에게 {chain}의 Version을 보냅니다.
-		SendVersion(peer.Encode(p.ID), chain)
+			_, err := ha.NewStream(context.Background(), p.ID, "/p2p/1.0.0")
+			if err != nil {
+				log.Printf("%s is \033[1;33mnot reachable\033[0m\n", p.ID)
 
-		log.Println("Connected to:", p)
+				peers.DeletePeer(p.ID)
+				log.Printf("%s => %s deleted\n", p.ID, p.Addrs)
+			} else {
+				// {destPeerID}에게 {chain}의 Version을 보냅니다.
+				SendVersion(peer.Encode(p.ID), chain)
+			}
 
+		} else {
+			// invalid peer
+			peers.DeletePeer(p.ID)
+			log.Println("\033[0;36mNo route to :\033[0m", p)
+		}
 	}
 
 	// Wait forever
