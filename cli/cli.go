@@ -193,7 +193,6 @@ func (cli *CommandLine) send(alias, to, targetPeer string, amount int, nodeId st
 	fmt.Println("Success!")
 }
 
-// {mintNow}가 false이면 트랜잭션을 만들어 Known Peer에게 보냅니다.
 func (cli *CommandLine) mint(to string, nodeId string) {
 	wallets, _ := wallet.CreateWallets(nodeId)
 	to = wallets.GetAddress(to)

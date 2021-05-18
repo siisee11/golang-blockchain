@@ -31,8 +31,6 @@ import (
 	DEATH "github.com/vrecan/death/v3"
 )
 
-// 	go get github.com/vrecan/death/v3
-
 const (
 	protocol      = "tcp" // 통신 프로토콜
 	version       = 1     // version number
@@ -40,17 +38,18 @@ const (
 )
 
 var (
-	Chain           *blockchain.BlockChain
-	peers           *Peers
-	ha              host.Host // 지금 노드의 host
-	NodeId          string    // 지금 노드의 nodeId
-	nodePeerId      string    // p2p에서 사용될 이 노드의 peerId
-	minterAddress   string    // minter의 주소
-	KnownPeers      = []string{}
-	blocksInTransit = [][]byte{}
+	Chain           *blockchain.BlockChain                    // Block의 정보를 담은 DB
+	peers           *Peers                                    // Peer들의 정보를 담은 DB
+	ha              host.Host                                 // 지금 노드의 host
+	NodeId          string                                    // 지금 노드의 nodeId
+	nodePeerId      string                                    // p2p에서 사용될 이 노드의 peerId
+	minterAddress   string                                    // minter의 주소
+	KnownPeers      = []string{}                              // 알려진 Peer들
+	blocksInTransit = [][]byte{}                              // 전송 받아야할 블록들
 	memoryPool      = make(map[string]blockchain.Transaction) // txID => Transaction
 )
 
+// print colour 참조용
 const (
 	InfoColor    = "\033[1;34m%s\033[0m"
 	NoticeColor  = "\033[1;36m%s\033[0m"
@@ -643,6 +642,7 @@ func handleStream(s network.Stream) {
 	go HandleP2PConnection(rw)
 }
 
+// DB에 저장된 Peer들에게 연락합니다.
 func connectToKnownPeer(host host.Host, peers *Peers) bool {
 	// 저장되어 있는 peer들을 출력합니다.
 	peerAddrInfos := peers.FindAllAddrInfo()
@@ -653,12 +653,13 @@ func connectToKnownPeer(host host.Host, peers *Peers) bool {
 
 	// 먼저 저장되어 있는 peer들에게 연결합니다.
 	for _, peerinfo := range peerAddrInfos {
-		// {host} => {peerID} 의 Stream을 만듭니다.
-		// 이 Stream은 {peerID}호스트의 steamHandler에 의해 처리될 것입니다.
+		// {host} => {peer} 의 Stream을 만듭니다.
+		// 이 Stream은 {peer}호스트의 steamHandler에 의해 처리될 것입니다.
 		s, err := host.NewStream(context.Background(), peerinfo.ID, "/p2p/1.0.0")
 		if err != nil {
 			log.Printf("%s is \033[1;33mnot reachable\033[0m\n", peerinfo.ID)
 
+			// 연결할 수 없다면 peer DB에서 삭제합니다.
 			peers.DeletePeer(peerinfo.ID)
 			log.Printf("%s => %s deleted\n", peerinfo.ID, peerinfo.Addrs)
 
@@ -684,6 +685,7 @@ func connectToKnownPeer(host host.Host, peers *Peers) bool {
 	return false
 }
 
+// rendezvous point에서 다른 peer들의 정보를 알아와서 연결합니다.
 func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous string, bootstrapPeers []ma.Multiaddr) {
 	kademliaDHT, err := dht.New(ctx, host)
 	if err != nil {
@@ -695,8 +697,8 @@ func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous
 		panic(err)
 	}
 
-	// Let's connect to the bootstrap nodes first. They will tell us about the
-	// other nodes in the network.
+	// Bootstrap 노드들은 네트워크에 속한 다른 노드들의 정보를 알려줍니다.
+	// 물론 우리의 정보도 접속하는 다른 노드에게 전달합니다.
 	var wg sync.WaitGroup
 	for _, peerAddr := range bootstrapPeers {
 		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
@@ -712,6 +714,7 @@ func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous
 	}
 	wg.Wait()
 
+	// rendezvous point에 우리의 정보를 적습니다.
 	log.Println("Announcing ourselves...")
 	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
 	discovery.Advertise(ctx, routingDiscovery, rendezvous)
@@ -719,6 +722,7 @@ func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous
 	log.Println("Searching for other peers...")
 	log.Printf("Now run \"go run main.go startp2p -rendezvous %s\" on a different terminal\n", rendezvous)
 
+	// peer들을 찾습니다. []peer.AddrInfo를 리턴합니다.
 	peerChan, err := routingDiscovery.FindPeers(ctx, rendezvous)
 	if err != nil {
 		panic(err)
@@ -729,24 +733,28 @@ func peerDiscovery(ctx context.Context, host host.Host, peers *Peers, rendezvous
 			continue
 		}
 
+		// 유효한 Addrs를 가지고 있으면
 		if len(p.Addrs) > 0 {
 			log.Println("\033[1;36mConnecting to:\033[0m", p)
+			// 이 정보를 Peer DB에 저장합니다
 			peers.AddPeer(p)
 
+			// Stream을 엽니다.
 			s, err := ha.NewStream(context.Background(), p.ID, "/p2p/1.0.0")
 			if err != nil {
 				log.Printf("%s is \033[1;33mnot reachable\033[0m\n", p.ID)
 
+				// Stream 생성에 에러가 생기면 PeerDB에서 Peer를 삭제합니다.
 				peers.DeletePeer(p.ID)
 				log.Printf("%s => %s \033[1;33mdeleted\033[0m\n", p.ID, p.Addrs)
 			} else {
-				// {destPeerID}에게 {Chain}의 Version을 보냅니다.
+				s.Close()
+				// {p}에게 {Chain}의 Version을 보냅니다.
 				SendVersion(peer.Encode(p.ID), Chain)
-				defer s.Close()
 			}
 
 		} else {
-			// invalid peer
+			// 유효하지 않은 Peer입니다. 혹시 DB에 저장되어 있을 수 있으니 삭제합니다.
 			peers.DeletePeer(p.ID)
 			log.Println("\033[1;31mINVAILD ADDR\033[0m", p)
 		}
@@ -788,6 +796,7 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 	fullAddr := getHostAddress(ha)
 	log.Printf("I am %s\n", fullAddr)
 
+	// StreamHandler를 시작합니다.
 	ha.SetStreamHandler("/p2p/1.0.0", handleStream)
 
 	// 저장되어 있는 peer들을 불러옵니다.
@@ -800,8 +809,9 @@ func StartHost(listenPort int, minter string, secio bool, randseed int64, rendez
 
 	// 저장되어 있는 피어에 우선 접속해봅니다.
 	connected := connectToKnownPeer(host, peers)
-	// 저장되어 있는 피어와 연결되지 않았다면
 	if !connected {
+		// 저장되어 있는 피어와 연결되지 않았다면
+		// 새로운 피어를 찾아서 연결합니다.
 		peerDiscovery(ctx, host, peers, rendezvous, bootstrapPeers)
 	}
 

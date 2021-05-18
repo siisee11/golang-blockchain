@@ -17,7 +17,6 @@ const (
 )
 
 type Peers struct {
-	//	Peers map[peer.ID][]ma.Multiaddr
 	Database *badger.DB
 }
 
